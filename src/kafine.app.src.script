@@ -1,0 +1,4 @@
+Vsn = string:trim(os:cmd("scripts/git-vsn")),
+{application, Name, App0} = lists:keyfind(application, 1, CONFIG),
+App = lists:keyreplace(vsn, 1, App0, {vsn, Vsn}),
+lists:keyreplace(application, 1, CONFIG, {application, Name, App}).

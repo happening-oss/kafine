@@ -1,0 +1,9 @@
+.archive-exclude
+.git
+_build
+.github
+.direnv
+.erlang.mk
+docs/presentations
+integration/k8s
+renovate.json

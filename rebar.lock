@@ -1,0 +1,30 @@
+{"1.2.0",
+[{<<"crc32cer">>,{pkg,<<"crc32cer">>,<<"0.1.11">>},1},
+ {<<"eqwalizer_support">>,
+  {git_subdir,"https://github.com/whatsapp/eqwalizer.git",
+              {ref,"8fcae044a6db74efa3dd5c6e1483d1e09be03847"},
+              "eqwalizer_support"},
+  1},
+ {<<"gproc">>,{pkg,<<"gproc">>,<<"0.9.1">>},0},
+ {<<"kafcod">>,
+  {git,"https://github.com/happening-oss/kafcod",
+       {ref,"9c864ec2f0e0d03e3b090450a020f6eff81062a9"}},
+  0},
+ {<<"snappyer">>,{pkg,<<"snappyer">>,<<"1.2.9">>},1},
+ {<<"telemetry">>,{pkg,<<"telemetry">>,<<"1.3.0">>},0},
+ {<<"vsn_transform">>,
+  {git,"https://github.com/rlipscombe/vsn_transform.git",
+       {ref,"97728dcad53474754e5180cb7db360e5db2cafd5"}},
+  0}]}.
+[
+{pkg_hash,[
+ {<<"crc32cer">>, <<"B550DA6D615FEB72A882D15D020F8F7DEE72DFB2CB1BCDF3B1EE8DC2AFD68CFC">>},
+ {<<"gproc">>, <<"F1DF0364423539CF0B80E8201C8B1839E229E5F9B3CCB944C5834626998F5B8C">>},
+ {<<"snappyer">>, <<"9CC58470798648CE34C662CA0AA6DAAE31367667714C9A543384430A3586E5D3">>},
+ {<<"telemetry">>, <<"FEDEBBAE410D715CF8E7062C96A1EF32EC22E764197F70CDA73D82778D61E7A2">>}]},
+{pkg_hash_ext,[
+ {<<"crc32cer">>, <<"A39B8F0B1990AC1BF06C3A247FC6A178B740CDFC33C3B53688DC7DD6B1855942">>},
+ {<<"gproc">>, <<"905088E32E72127ED9466F0BAC0D8E65704CA5E73EE5A62CB073C3117916D507">>},
+ {<<"snappyer">>, <<"18D00CA218AE613416E6EECAFE1078DB86342A66F86277BD45C95F05BF1C8B29">>},
+ {<<"telemetry">>, <<"7015FC8919DBE63764F4B4B87A95B7C0996BD539E0D499BE6EC9D7F3875B79E6">>}]}
+].

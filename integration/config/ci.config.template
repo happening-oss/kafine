@@ -1,0 +1,3 @@
+% In CI, the brokers are behind a headless service; we can use the name of the service, rather than a particular broker,
+% as the bootstrap value.
+{bootstrap_server, "${BRANCH_NAME}-kafka.kafine-tests.svc.cluster.local:9092"}.

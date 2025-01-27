@@ -1,0 +1,112 @@
+#!/bin/bash
+
+# Originally from https://github.com/rlipscombe/git-vsn
+# See https://blog.differentpla.net/blog/2022/11/05/git-vsn/
+# License: MIT
+
+TAG_PREFIX=
+ABBREV=10
+
+usage() { echo "Usage: $0 [-t <tag-prefix>] [-a <abbrev-len>]" 1>&2; exit 1; }
+
+while getopts "a:t:" opt; do
+    case $opt in
+        t)
+            TAG_PREFIX=${OPTARG}
+            ;;
+        a)
+            ABBREV=${OPTARG}
+            ;;
+        *)
+            usage
+            ;;
+    esac
+done
+
+# allow explicitly setting the version (in a parent Makefile, e.g.):
+if [ -n "$GIT_VSN" ]; then
+    echo "$GIT_VSN"
+    exit 0
+fi
+
+# look up the directory tree for a particular file;
+# return the directory it was found in.
+search_up() {
+    local look=${PWD%/}
+
+    while [[ -n $look ]]; do
+        [[ -e $look/$1 ]] && {
+            printf '%s\n' "$look"
+            return
+        }
+
+        look=${look%/*}
+    done
+
+    [[ -e /$1 ]] && echo /
+}
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    # we're not in a work tree, so we can't figure out the version.
+    # hopefully there's a .git-vsn file somewhere to tell us.
+    git_vsn_file="$(search_up ".git-vsn")/.git-vsn"
+    if [ -f "$git_vsn_file" ]; then
+        head "$git_vsn_file"
+        exit 0
+    else
+        echo "Error: not in git work tree; cannot find .git-vsn file"
+        exit 1
+    fi
+fi
+
+# refresh the index
+git status >/dev/null 2>&1
+
+# parse the output from 'git describe'; note that if TAG_PREFIX is empty, this'll pick up non-version-looking tags,
+# and things will break.
+# TODO: Consider using git for-each-ref instead, but it's going to mean building our own topo-sort to find the closest tag.
+tag_glob="${TAG_PREFIX}*"
+describe_re="^${TAG_PREFIX}([0-9]+)\\.([0-9]+)\\.([0-9]+)-([0-9]+)-g([0-9a-f]+)\$"
+
+if ! description=$(git describe --tags --long --abbrev="$ABBREV" --match "$tag_glob"); then
+    exit 1
+fi
+
+if [[ $description =~ $describe_re ]]; then
+    ver_major="${BASH_REMATCH[1]}"
+    ver_minor="${BASH_REMATCH[2]}"
+    ver_patch="${BASH_REMATCH[3]}"
+    commits="${BASH_REMATCH[4]}"
+    sha="${BASH_REMATCH[5]}"
+else
+    echo "Error: '${description}' didn't match regex"
+    exit 1
+fi
+
+# if there are commits, assume we're working on the next version
+if [[ "$commits" -gt 0 ]]; then
+    branch_re="^${TAG_PREFIX}([0-9]+)\.([0-9]+)"
+    branch=$(git branch --show-current)
+    if [[ $branch =~ $branch_re ]]; then
+        # we're on a maintenance branch; increment patch
+        ((ver_patch++))
+    else
+        # trunk; increment minor, clear patch
+        ((ver_minor++))
+        ver_patch=0
+    fi
+
+    # add a -pre suffix.
+    pre="-pre"
+fi
+
+# are there local/staged changes?
+dirty=$(git diff-index --quiet HEAD || echo ".dirty")
+
+# is the current commit pushed to a remote branch?
+remote_branch=$(git branch -r --contains HEAD 2>/dev/null)
+if [ "$remote_branch" == "" ]; then
+    dirty=".dirty"
+fi
+
+echo "${ver_major}.${ver_minor}.${ver_patch}${pre}+${sha}${dirty}"

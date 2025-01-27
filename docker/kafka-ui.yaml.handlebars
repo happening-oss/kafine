@@ -1,0 +1,6 @@
+kafka:
+  clusters:
+{{#each clusters}}
+    - name: {{name}}
+      bootstrapServers: kafka-{{name}}-{{brokers.[0].id}}:29090
+{{/each}}
