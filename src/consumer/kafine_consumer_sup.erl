@@ -1,4 +1,5 @@
 -module(kafine_consumer_sup).
+-moduledoc false.
 -export([
     start_group_consumer_linked/8,
     start_topic_consumer_linked/7

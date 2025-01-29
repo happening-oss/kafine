@@ -1,4 +1,5 @@
 -module(kafine_fetch_request).
+-moduledoc false.
 -export([build_fetch_request/2]).
 
 -include_lib("kafcod/include/isolation_level.hrl").

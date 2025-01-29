@@ -1,5 +1,5 @@
 -module(kafine_response_telemetry).
-
+-moduledoc false.
 -export([
     enrich_span/2
 ]).

@@ -1,4 +1,5 @@
 -module(kafine_list_offsets_response).
+-moduledoc false.
 -export([fold/3]).
 
 -include_lib("kafcod/include/error_code.hrl").

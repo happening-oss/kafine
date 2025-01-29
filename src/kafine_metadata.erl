@@ -1,4 +1,5 @@
 -module(kafine_metadata).
+-moduledoc false.
 -export([
     group_by_leader/1,
     group_by_leader/3

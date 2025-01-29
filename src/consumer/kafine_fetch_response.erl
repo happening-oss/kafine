@@ -1,4 +1,5 @@
 -module(kafine_fetch_response).
+-moduledoc false.
 -export([fold/4]).
 
 %% A Kafka FetchResponse is a nested data structure:

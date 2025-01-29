@@ -1,4 +1,5 @@
 -module(kafine_fetch_response_partition_data).
+-moduledoc false.
 -export([fold/6]).
 
 %% See the module comments in kafine_fetch_response.erl

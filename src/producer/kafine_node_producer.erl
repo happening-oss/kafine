@@ -1,4 +1,5 @@
 -module(kafine_node_producer).
+-moduledoc false.
 -export([
     start_link/2,
     stop/1,

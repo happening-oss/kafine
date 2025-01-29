@@ -1,4 +1,6 @@
 -module(kafine_via).
+%%% Wrapper to allow `gproc` to be used with `via`.
+-moduledoc false.
 -export([
     register_name/2,
     unregister_name/1,

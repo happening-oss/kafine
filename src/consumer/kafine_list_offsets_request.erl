@@ -1,4 +1,5 @@
 -module(kafine_list_offsets_request).
+-moduledoc false.
 -export([build_list_offsets_request/3]).
 
 -include_lib("kafcod/include/timestamp.hrl").

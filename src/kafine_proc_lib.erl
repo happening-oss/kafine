@@ -1,4 +1,6 @@
 -module(kafine_proc_lib).
+-moduledoc false.
+%%% Wrapper for proc_lib:set_label/1 (which requires OTP-27).
 -export([set_label/1]).
 
 set_label(Label) ->

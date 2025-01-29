@@ -1,4 +1,5 @@
 -module(kafine_maps).
+-moduledoc false.
 -export([
     get/2,
     get/3,

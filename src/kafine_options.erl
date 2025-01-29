@@ -1,4 +1,5 @@
 -module(kafine_options).
+-moduledoc false.
 -export([
     validate_options/4,
     validate_options/5

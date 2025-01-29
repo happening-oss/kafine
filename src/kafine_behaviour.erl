@@ -1,4 +1,6 @@
 -module(kafine_behaviour).
+%%% Ensure that a behaviour module exports the required functions.
+-moduledoc false.
 -export([
     verify_callbacks_exported/2
 ]).

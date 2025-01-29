@@ -1,4 +1,5 @@
 -module(kafine_node_consumer).
+-moduledoc false.
 -export([
     start_link/5,
     stop/1,

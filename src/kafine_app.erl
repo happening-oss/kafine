@@ -1,4 +1,5 @@
 -module(kafine_app).
+-moduledoc false.
 -behaviour(application).
 
 -export([start/2]).

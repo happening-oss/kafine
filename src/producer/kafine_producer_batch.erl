@@ -1,5 +1,5 @@
 -module(kafine_producer_batch).
-
+-moduledoc false.
 -export([
     produce_batch/3
 ]).

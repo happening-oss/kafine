@@ -1,4 +1,6 @@
 -module(kafine_trace).
+%%% Convert `gen_server` and `gen_statem` tracing into calls to `logger`.
+-moduledoc false.
 -export([
     debug/0,
     debug/1,

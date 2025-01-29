@@ -1,4 +1,5 @@
 -module(kafine_sup).
+-moduledoc false.
 -behaviour(supervisor).
 
 -export([start_link/0]).

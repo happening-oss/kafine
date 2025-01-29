@@ -19,10 +19,13 @@ integration:
 
 eqwalize:: compile
 
+ex_doc:
+	rebar3 ex_doc
+
 ERLANG_MK_TMP = $(shell TERM=dumb QUIET=1 rebar3 path --base)
 include eqwalizer.mk
 
-all: compile dialyzer eqwalize eunit
+all: compile dialyzer eqwalize eunit ex_doc
 
 GNU_TAR ?= gtar
 ARCHIVE := ../kafine-$(PROJECT_VERSION).tar

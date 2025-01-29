@@ -1,5 +1,5 @@
 -module(kafine_request_telemetry).
-
+-moduledoc false.
 -export([
     request_labels/2,
     request_labels/3,

@@ -15,6 +15,19 @@
     current_offset = -1
 }).
 
+% `kafine_consumer_callback_logger` allows you to pass a formatting function. So, for example, if your messages are
+% binary-term-encoded, you might use this:
+
+% ```erlang
+% Callback =
+%     {kafine_consumer_callback_logger, #{
+%         formatter =>
+%             fun(K, V, H) ->
+%                 io_lib:format("~s = ~p (~p)", [K, binary_to_term(V), H])
+%             end
+%     }}.
+% ```
+
 init(_T, _P, #{formatter := Formatter}) when is_function(Formatter, 3) ->
     State = #state{formatter = Formatter},
     {ok, State};
