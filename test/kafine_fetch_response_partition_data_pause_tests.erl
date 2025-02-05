@@ -30,7 +30,9 @@ cleanup(_) ->
 single_batch_pause_offset_4() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_single_batch(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
+        FetchResponse
+    ),
 
     % Pause after the message with offset 4. It's in the first batch. We shouldn't see messages 5-8.
     meck:expect(test_consumer_callback, handle_record, fun
@@ -39,11 +41,10 @@ single_batch_pause_offset_4() ->
     end),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
 
@@ -65,7 +66,9 @@ single_batch_pause_offset_4() ->
 two_batches_pause_offset_4() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_two_batches(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
+        FetchResponse
+    ),
 
     % Pause after the message with offset 4. It's in the first batch. We shouldn't see messages 5-8.
     meck:expect(test_consumer_callback, handle_record, fun
@@ -74,11 +77,10 @@ two_batches_pause_offset_4() ->
     end),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
 
@@ -100,7 +102,9 @@ two_batches_pause_offset_4() ->
 single_batch_pause_end_record_batch() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_single_batch(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
+        FetchResponse
+    ),
 
     % Pause at the end of the batch.
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _M, _Info, St) ->
@@ -108,11 +112,10 @@ single_batch_pause_end_record_batch() ->
     end),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
 
@@ -135,7 +138,9 @@ single_batch_pause_end_record_batch() ->
 two_batches_pause_end_record_batch() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_two_batches(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
+        FetchResponse
+    ),
 
     % Pause at the end of the batch.
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _M, _Info, St) ->
@@ -143,11 +148,10 @@ two_batches_pause_end_record_batch() ->
     end),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
 
@@ -169,10 +173,3 @@ two_batches_pause_end_record_batch() ->
     ),
     ?assertMatch({9, paused, ?CALLBACK_STATE}, FoldResult),
     ok.
-
-% Given a canned fetch response, break it into the three pieces required by kafine_fetch_response_partition_data:fold().
-split_fetch_response(FetchResponse) ->
-    #{responses := [FetchableTopicResponse]} = FetchResponse,
-    #{partitions := [PartitionData]} = FetchableTopicResponse,
-    Info = maps:with([log_start_offset, last_stable_offset, high_watermark], PartitionData),
-    {FetchableTopicResponse, PartitionData, Info}.

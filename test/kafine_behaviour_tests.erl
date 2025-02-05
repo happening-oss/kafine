@@ -1,6 +1,9 @@
 -module(kafine_behaviour_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+%% The 'kafine_behaviour' module checks that you've passed it a module that implements the callback functions required
+%% by a particular behaviour.
+
 %% We want to make it easy to diagnose problems with the user-provided callback module.
 
 not_an_atom_test() ->

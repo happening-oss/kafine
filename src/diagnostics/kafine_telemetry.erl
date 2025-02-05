@@ -1,4 +1,6 @@
 -module(kafine_telemetry).
+-moduledoc false.
+
 -export([
     put_metadata/1,
     get_metadata/1,

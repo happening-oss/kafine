@@ -12,6 +12,9 @@
     resume/3,
     resume/4
 ]).
+-export([
+    init_ack/4
+]).
 -behaviour(gen_statem).
 -export([
     init/1,
@@ -55,6 +58,7 @@ start_link(Ref, Bootstrap, ConnectionOptions, ConsumerCallback, ConsumerOptions)
         via(Ref),
         ?MODULE,
         [
+            Ref,
             Bootstrap,
             ConnectionOptions,
             ConsumerCallback,
@@ -93,11 +97,12 @@ resume(Consumer, Topic, Partition) ->
     resume(Consumer, Topic, Partition, keep_current_offset).
 
 -spec resume(
-    Consumer :: pid(),
+    Consumer :: pid() | ref(),
     Topic :: kafine:topic(),
     Partition :: kafine:partition(),
     Offset :: kafine:offset() | keep_current_offset
 ) -> ok.
+
 resume(Consumer, Topic, Partition, Offset) ->
     call(Consumer, {resume, {Topic, Partition, Offset}}).
 
@@ -106,10 +111,23 @@ call(Consumer, Request) when is_pid(Consumer) ->
 call(Consumer, Request) ->
     gen_statem:call(via(Consumer), Request).
 
+-spec init_ack(
+    Consumer :: pid() | ref(),
+    Topic :: kafine:topic(),
+    Partition :: kafine:partition(),
+    State :: active | paused
+) -> ok.
+
+init_ack(Consumer, Topic, Partition, State) when is_pid(Consumer) ->
+    erlang:send(Consumer, {init_ack, {Topic, Partition}, State});
+init_ack(Consumer, Topic, Partition, State) ->
+    kafine_via:send({?MODULE, Consumer}, {init_ack, {Topic, Partition}, State}).
+
 callback_mode() ->
     [handle_event_function].
 
 -record(state, {
+    ref :: ref(),
     broker :: kafine:broker(),
     connection :: kafine:connection() | undefined,
     connection_options :: kafine:connection_options(),
@@ -119,9 +137,10 @@ callback_mode() ->
     node_consumers :: #{kafine:node_id() := pid()}
 }).
 
-init([Bootstrap, ConnectionOptions, ConsumerCallback, ConsumerOptions]) ->
+init([Ref, Bootstrap, ConnectionOptions, ConsumerCallback, ConsumerOptions]) ->
     process_flag(trap_exit, true),
     StateData = #state{
+        ref = Ref,
         broker = Bootstrap,
         connection = undefined,
         connection_options = ConnectionOptions,
@@ -154,12 +173,13 @@ handle_event(
     {subscribe, Subscription},
     _State,
     StateData = #state{
+        ref = Ref,
         consumer_callback = ConsumerCallback,
         topic_options = TopicOptions0
     }
 ) ->
     TopicPartitionStates = init_topic_partition_states(
-        ConsumerCallback, Subscription
+        Ref, ConsumerCallback, Subscription
     ),
 
     telemetry:execute([kafine, consumer, subscription], #{}, #{
@@ -268,7 +288,6 @@ do_subscribe(
         connection = Connection,
         connection_options = ConnectionOptions,
         consumer_options = ConsumerOptions,
-        consumer_callback = ConsumerCallback,
         node_consumers = NodeConsumers0
     }
 ) ->
@@ -323,7 +342,6 @@ do_subscribe(
                         Leader,
                         ConnectionOptions,
                         ConsumerOptions,
-                        ConsumerCallback,
                         self()
                     ),
                     ok = kafine_node_consumer:subscribe(
@@ -343,20 +361,27 @@ do_subscribe(
     StateData#state{node_consumers = NodeConsumers, topic_options = TopicOptions}.
 
 -spec init_topic_partition_states(
+    Ref :: ref(),
     {Callback :: module(), CallbackArgs :: term()},
     Subscription :: subscription()
 ) -> topic_partition_states().
 
-init_topic_partition_states({Callback, CallbackArgs}, Subscription) ->
+init_topic_partition_states(Ref, {Callback, CallbackArgs}, Subscription) ->
     maps:fold(
         fun(Topic, {_Options, PartitionOffsets}, Acc) ->
             PartitionStates = maps:map(
                 fun(PartitionIndex, Offset) ->
-                    {State, StateData} = callback_init(
-                        Topic, PartitionIndex, Callback, CallbackArgs
+                    {ok, ClientPid} = kafine_consumer_callback_process:start_link(
+                        Ref, Topic, PartitionIndex, Callback, CallbackArgs
                     ),
+                    receive
+                        {init_ack, {Topic, PartitionIndex}, State} ->
+                            ok
+                    end,
                     #topic_partition_state{
-                        offset = Offset, state = State, state_data = StateData
+                        offset = Offset,
+                        state = State,
+                        client_pid = ClientPid
                     }
                 end,
                 PartitionOffsets
@@ -366,16 +391,6 @@ init_topic_partition_states({Callback, CallbackArgs}, Subscription) ->
         #{},
         Subscription
     ).
-
-callback_init(Topic, PartitionIndex, Callback, CallbackArgs) ->
-    callback_init_result(Callback:init(Topic, PartitionIndex, CallbackArgs)).
-
-callback_init_result({ok, State}) ->
-    {active, State};
-callback_init_result({pause, State}) ->
-    {paused, State};
-callback_init_result(Other) ->
-    erlang:error({bad_callback_return, Other}).
 
 -spec get_node_by_id([Node], NodeId :: non_neg_integer()) -> Node when
     Node :: #{node_id := integer(), host := binary(), port := integer(), _ := _}.

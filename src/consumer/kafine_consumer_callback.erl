@@ -32,6 +32,8 @@
     State :: term()
 ) -> {ok, State2 :: term()} | {pause, State2 :: term()}.
 
+-export_type([log_info/0]).
+
 -type log_info() :: #{
     % If old log segments are deleted, the log won't start at zero.
     log_start_offset := non_neg_integer(),

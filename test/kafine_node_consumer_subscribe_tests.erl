@@ -1,8 +1,6 @@
 -module(kafine_node_consumer_subscribe_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
-
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
@@ -21,10 +19,6 @@ all_test_() ->
     ]}.
 
 setup() ->
-    meck:new(kamock_fetch, [passthrough]),
-    meck:new(kamock_partition_data, [passthrough]),
-    meck:new(kamock_metadata_response_partition, [passthrough]),
-
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
     meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
@@ -32,6 +26,12 @@ setup() ->
     end),
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+
+    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
+
+    meck:new(kamock_fetch, [passthrough]),
+    meck:new(kamock_partition_data, [passthrough]),
+    meck:new(kamock_metadata_response_partition, [passthrough]),
     ok.
 
 cleanup(_) ->
@@ -43,7 +43,6 @@ subscribe() ->
         Broker,
         ?CONNECTION_OPTIONS,
         _ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-        {test_consumer_callback, undefined},
         self()
     ),
 
@@ -51,12 +50,12 @@ subscribe() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 0},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION_1 => #{},
+            ?PARTITION_2 => #{}
         }
-    },
+    }),
     TopicOptions = #{TopicName => kafine_topic_options:validate_options(#{})},
     kafine_node_consumer:subscribe(NodeConsumer, TopicPartitionStates, TopicOptions),
 
@@ -79,6 +78,7 @@ subscribe() ->
     ),
 
     kafine_node_consumer:stop(NodeConsumer),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -88,7 +88,6 @@ unsubscribe() ->
         Broker,
         ?CONNECTION_OPTIONS,
         _ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-        {test_consumer_callback, undefined},
         self()
     ),
 
@@ -96,12 +95,12 @@ unsubscribe() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 0},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION_1 => #{},
+            ?PARTITION_2 => #{}
         }
-    },
+    }),
     TopicOptions = #{TopicName => kafine_topic_options:validate_options(#{})},
     kafine_node_consumer:subscribe(NodeConsumer, TopicPartitionStates, TopicOptions),
 
@@ -156,6 +155,7 @@ unsubscribe() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     kafine_node_consumer:stop(NodeConsumer),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -165,7 +165,6 @@ unsubscribe_all() ->
         Broker,
         ?CONNECTION_OPTIONS,
         _ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-        {test_consumer_callback, undefined},
         self()
     ),
 
@@ -173,12 +172,12 @@ unsubscribe_all() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 0},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION_1 => #{},
+            ?PARTITION_2 => #{}
         }
-    },
+    }),
     TopicOptions = #{TopicName => kafine_topic_options:validate_options(#{})},
     kafine_node_consumer:subscribe(NodeConsumer, TopicPartitionStates, TopicOptions),
 
@@ -207,6 +206,7 @@ unsubscribe_all() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     kafine_node_consumer:stop(NodeConsumer),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -219,7 +219,6 @@ unsubscribe_unknown() ->
         Broker,
         ?CONNECTION_OPTIONS,
         _ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-        {test_consumer_callback, undefined},
         self()
     ),
 
@@ -227,12 +226,12 @@ unsubscribe_unknown() ->
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 0},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION_1 => #{},
+            ?PARTITION_2 => #{}
         }
-    },
+    }),
     TopicOptions = #{TopicName => kafine_topic_options:validate_options(#{})},
     kafine_node_consumer:subscribe(NodeConsumer, TopicPartitionStates, TopicOptions),
 
@@ -263,5 +262,12 @@ unsubscribe_unknown() ->
     ),
 
     kafine_node_consumer:stop(NodeConsumer),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
+
+init_topic_partition_states(InitStates) ->
+    kafine_fetch_response_tests:init_topic_partition_states(InitStates).
+
+cleanup_topic_partition_states(TopicPartitionStates) ->
+    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).

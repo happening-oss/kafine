@@ -3,6 +3,5 @@
 
 -export([adjust_committed_offset/1]).
 
-
 adjust_committed_offset(CommittedOffset) ->
-  CommittedOffset.
+    CommittedOffset.

@@ -2,13 +2,10 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kafcod/include/error_code.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
-
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(CALLBACK_STATE, ?MODULE).
 -define(WAIT_TIMEOUT_MS, 2_000).
--define(CONNECTION_OPTIONS, #{}).
 
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
@@ -18,6 +15,8 @@ setup() ->
     end),
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+
+    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -28,22 +27,6 @@ kafine_node_consumer_give_away_test_() ->
         fun not_leader_or_follower/0,
         fun not_leader_or_follower_2/0
     ]}.
-
-start_node_consumer(Broker, TopicPartitionStates) ->
-    % validate_options is a helper function; we only call it because we're testing kafine_node_consumer directly.
-    ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-    TopicNames = maps:keys(TopicPartitionStates),
-    TopicOptions =
-        #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
-    {ok, Pid} = kafine_node_consumer:start_link(
-        Broker,
-        ?CONNECTION_OPTIONS,
-        ConsumerOptions,
-        {test_consumer_callback, undefined},
-        self()
-    ),
-    ok = kafine_node_consumer:subscribe(Pid, TopicPartitionStates, TopicOptions),
-    {ok, Pid}.
 
 not_leader_or_follower() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
@@ -71,11 +54,11 @@ not_leader_or_follower() ->
     ),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #topic_partition_state{state = active, offset = 0}
+            61 => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % The node consumer should notify its owner (us) that it lost the partition.
@@ -90,6 +73,7 @@ not_leader_or_follower() ->
     ?assertMatch({idle, _}, sys:get_state(Pid)),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -111,12 +95,12 @@ not_leader_or_follower_2() ->
     ),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #topic_partition_state{state = active, offset = 0},
-            62 => #topic_partition_state{state = active, offset = 0}
+            61 => #{},
+            62 => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % The node consumer should notify its owner (us) that it lost partition zero.
@@ -140,5 +124,15 @@ not_leader_or_follower_2() ->
     ] = meck:history(kamock_fetch),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
+
+init_topic_partition_states(InitStates) ->
+    kafine_fetch_response_tests:init_topic_partition_states(InitStates).
+
+cleanup_topic_partition_states(TopicPartitionStates) ->
+    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
+
+start_node_consumer(Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).

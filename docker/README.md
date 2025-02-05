@@ -17,7 +17,9 @@ to <http://localhost:8080>.
 make scale-up
 ```
 
-This adds another 3 brokers to the "default" cluster.
+This adds another 3 brokers to the "default" cluster, for a total of 6 brokers.
+
+Note that Kafka brokers require quite a lot of memory, so you may not be able to run more than the initial 3 brokers.
 
 ## Start an extra cluster
 
@@ -44,14 +46,8 @@ make purge
 
 ## Using the cluster
 
-### From kafire
-
-In your config file (this is `local.config`):
-
-```erlang
-    {kafire, [
-        {bootstrap_servers, "localhost:9092"},
-```
+The cluster exposes brokers at `localhost:9092`, `localhost:9093`, `localhost:9094`, etc. Connect to any one of these as
+the bootstrap server.
 
 ### From kcat
 
@@ -61,7 +57,7 @@ kcat -b localhost:9092 -L
 
 ### Using go-zkcli
 
-Because you might want to poke around in ZooKeeper.
+The cluster runs a single ZooKeeper instance. You can examine it with, e.g., `zkcli`, as follows:
 
 ```sh
 go install github.com/go-zkcli/zkcli@latest

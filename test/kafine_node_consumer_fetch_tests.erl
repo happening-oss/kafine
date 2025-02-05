@@ -3,7 +3,6 @@
 
 -include_lib("kafcod/include/error_code.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
 -include("history_matchers.hrl").
 
 -elvis([{elvis_style, dont_repeat_yourself, disable}]).
@@ -11,9 +10,9 @@
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION, 61).
+-define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, ?MODULE).
 -define(WAIT_TIMEOUT_MS, 2_000).
--define(CONNECTION_OPTIONS, #{}).
 
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
@@ -23,6 +22,8 @@ setup() ->
     end),
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+
+    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
 
     meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_fetch, [passthrough]),
@@ -49,17 +50,18 @@ single_message_fetch() ->
     mock_single_produce(Broker, 1),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % We should see two record batches, one with a single message, one empty:
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
+            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
             ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 1, 1),
             ?handle_record(TopicName, ?PARTITION, <<"key0">>, <<"value0">>),
             ?end_record_batch(TopicName, ?PARTITION, 1, 0, 1, 1),
@@ -71,21 +73,22 @@ single_message_fetch() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 separate_produces_fetch_zero_offset() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    TopicName = ?TOPIC_NAME,
 
     MessageCount = 3,
     mock_separate_produces(Broker, MessageCount),
 
-    TopicPartitionStates = #{
+    TopicName = ?TOPIC_NAME,
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 3 messages, one empty. Note that the response actually has 3 record
@@ -94,6 +97,7 @@ separate_produces_fetch_zero_offset() ->
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
+            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
             ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 3, 3),
             ?handle_record(TopicName, ?PARTITION, <<"key0">>, _),
             ?handle_record(TopicName, ?PARTITION, <<"key1">>, _),
@@ -107,23 +111,24 @@ separate_produces_fetch_zero_offset() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 separate_produces_fetch_positive_offset() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    TopicName = ?TOPIC_NAME,
 
     MessageCount = 3,
     mock_separate_produces(Broker, MessageCount),
 
     % Initial offset is two; we expect to see a single message.
     InitialOffset = 2,
-    TopicPartitionStates = #{
+    TopicName = ?TOPIC_NAME,
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION => #topic_partition_state{state = active, offset = InitialOffset}
+            ?PARTITION => #{offset => InitialOffset}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our expected messages, one empty. Note that the response actually has 3 record
@@ -132,6 +137,7 @@ separate_produces_fetch_positive_offset() ->
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
+            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
             ?begin_record_batch(TopicName, ?PARTITION, 2, 0, 3, 3),
             ?handle_record(TopicName, ?PARTITION, <<"key2">>, _),
             ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
@@ -143,21 +149,22 @@ separate_produces_fetch_positive_offset() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 combined_produce_fetch_zero_offset() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    TopicName = ?TOPIC_NAME,
 
     MessageCount = 3,
     mock_single_produce(Broker, MessageCount),
 
-    TopicPartitionStates = #{
+    TopicName = ?TOPIC_NAME,
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION => #topic_partition_state{state = active, offset = 0}
+            ?PARTITION => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 3 messages, one empty. Note that in this case, the messages really
@@ -165,6 +172,7 @@ combined_produce_fetch_zero_offset() ->
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
+            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
             ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 3, 3),
             ?handle_record(TopicName, ?PARTITION, <<"key0">>, _),
             ?handle_record(TopicName, ?PARTITION, <<"key1">>, _),
@@ -178,29 +186,33 @@ combined_produce_fetch_zero_offset() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 combined_produce_fetch_positive_offset() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    TopicName = ?TOPIC_NAME,
 
     MessageCount = 5,
     mock_single_produce(Broker, MessageCount),
 
     % 5 messages, initial offset 3; we should see 2 messages (0, 1, 2, [3, 4]).
     InitialOffset = 3,
-    TopicPartitionStates = #{
+    TopicName = ?TOPIC_NAME,
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION => #topic_partition_state{state = active, offset = InitialOffset}
+            ?PARTITION => #{
+                offset => InitialOffset
+            }
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 2 messages, one empty.
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
+            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
             ?begin_record_batch(TopicName, ?PARTITION, 3, 0, 5, 5),
             ?handle_record(TopicName, ?PARTITION, <<"key3">>, _),
             ?handle_record(TopicName, ?PARTITION, <<"key4">>, _),
@@ -216,21 +228,14 @@ combined_produce_fetch_positive_offset() ->
     kamock_broker:stop(Broker),
     ok.
 
+init_topic_partition_states(InitStates) ->
+    kafine_fetch_response_tests:init_topic_partition_states(InitStates).
+
+cleanup_topic_partition_states(TopicPartitionStates) ->
+    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
+
 start_node_consumer(Broker, TopicPartitionStates) ->
-    % validate_options is a helper function; we only call it because we're testing kafine_node_consumer directly.
-    ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-    TopicNames = maps:keys(TopicPartitionStates),
-    TopicOptions =
-        #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
-    {ok, Pid} = kafine_node_consumer:start_link(
-        Broker,
-        ?CONNECTION_OPTIONS,
-        ConsumerOptions,
-        {test_consumer_callback, undefined},
-        self()
-    ),
-    ok = kafine_node_consumer:subscribe(Pid, TopicPartitionStates, TopicOptions),
-    {ok, Pid}.
+    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
 
 % TODO: Single produce, multiple messages, tail offset.
 

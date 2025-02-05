@@ -1,26 +1,43 @@
 -module(kafine_logger_filters).
+-include("kafine_doc.hrl").
+
+?MODULEDOC("""
+Filters to use with Logger.
+
+When the connection to the broker is dropped, Erlang reports this as an error. By using this logger filter, you can
+stop (or downgrade) the logging.
+""").
+
 -export([connection_errors/2]).
 
-% When the connection to the broker is dropped, Erlang reports this as an error. By using this logger filter, you can
-% stop (or downgrade) the logging.
-%
-% Put it in your sys.config as follows:
-%
-% {kernel, [
-%   {logger, [
-%     {filters, log, [
-%       % Stop {exit, closed} errors from kafine_connection. You can specify 'warn', instead of 'stop'.
-%       {stop_connection_errors, {fun kafine_logger_filters:connection_errors/2, stop}}
-%       % ...
-%
-% Or you can add the filter programmatically:
-%
-%   ok = logger:add_primary_filter(
-%       stop_connection_errors, {fun kafine_logger_filters:connection_errors/2, stop}
-%   ),
+?DOC("""
+This filter provides a way to suppress or downgrade errors caused by `kafine_connection` crashing.
 
--spec connection_errors(logger:log_event(), logger:filter_arg()) -> logger:filter_return().
+Since kafine reconnects automatically, these reports are just noise in the logs.
 
+## Examples
+
+Put it in your `sys.config` as follows:
+
+```erlang
+{kernel, [
+  {logger, [
+    {filters, log, [
+      % Stop {exit, closed} errors from kafine_connection.
+      % If, instead of 'stop', you specify 'warn', the errors are downgraded to warnings.
+      {stop_connection_errors, {fun kafine_logger_filters:connection_errors/2, stop}}
+      % ...
+```
+
+Or you can add the filter programmatically:
+
+```erlang
+ok = logger:add_primary_filter(
+    stop_connection_errors, {fun kafine_logger_filters:connection_errors/2, stop}
+),
+```
+""").
+-spec connection_errors(logger:log_event(), Options :: warn | stop) -> logger:filter_return().
 connection_errors(
     LogEvent = #{
         level := error,

@@ -87,6 +87,5 @@ subscription_callback_is_called() ->
         meck:called(test_assignment_callback, after_assignment, '_')
     ),
 
-
     kamock_broker:stop(Broker),
     ok.

@@ -261,5 +261,5 @@ handle_event(
     % Note that latency measurements are in the span.
     {next_state, connected, StateData#state{pending = Pending2}, [{reply, From, {ok, Buffer}}]};
 handle_event(info, {tcp_closed, Socket}, _State, _StateData = #state{socket = Socket}) ->
-    ?LOG_WARNING("closed"),
+    ?LOG_NOTICE("Connection closed"),
     {stop, closed}.

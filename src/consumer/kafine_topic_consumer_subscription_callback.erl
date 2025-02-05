@@ -1,4 +1,6 @@
 -module(kafine_topic_consumer_subscription_callback).
+-moduledoc false.
+
 -behaviour(kafine_subscription_callback).
 
 -export([
@@ -31,7 +33,7 @@ make_subscription(AssignedPartitions, AllTopicOptions) ->
     Fun = fun(TopicName, Partitions) ->
         InitialOffset = -1,
         MakeOffset = fun(Partition, OffsetAcc) ->
-            OffsetAcc#{ Partition => InitialOffset }
+            OffsetAcc#{Partition => InitialOffset}
         end,
         Offsets = lists:foldl(MakeOffset, #{}, Partitions),
         TopicOptions = maps:get(TopicName, AllTopicOptions, #{}),

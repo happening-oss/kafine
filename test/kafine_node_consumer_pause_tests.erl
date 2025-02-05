@@ -1,15 +1,12 @@
 -module(kafine_node_consumer_pause_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
-
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
 -define(CALLBACK_STATE, ?MODULE).
 -define(WAIT_TIMEOUT_MS, 2_000).
--define(CONNECTION_OPTIONS, #{}).
 
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
@@ -19,6 +16,8 @@ setup() ->
     end),
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+
+    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
 
     meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_fetch, [passthrough]),
@@ -43,17 +42,12 @@ start_paused() ->
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {pause, ?CALLBACK_STATE} end),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            % The partition state is initially set from ConsumerCallback:init.
-            ?PARTITION_1 => #topic_partition_state{
-                state = paused, state_data = ?CALLBACK_STATE, offset = 10
-            },
-            ?PARTITION_2 => #topic_partition_state{
-                state = paused, state_data = ?CALLBACK_STATE, offset = 12
-            }
+            ?PARTITION_1 => #{state => paused, offset => 10},
+            ?PARTITION_2 => #{state => paused, offset => 12}
         }
-    },
+    }),
 
     TelemetryRef = telemetry_test:attach_event_handlers(self(), [
         [kafine, node_consumer, idle],
@@ -71,6 +65,7 @@ start_paused() ->
     telemetry:detach(TelemetryRef),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -78,12 +73,12 @@ pause() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 10},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 12}
+            ?PARTITION_1 => #{offset => 10},
+            ?PARTITION_2 => #{offset => 12}
         }
-    },
+    }),
 
     % Pretend that there are some messages.
     mock_produce(0, 14),
@@ -136,6 +131,7 @@ pause() ->
     meck:reset(kamock_partition_data),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -143,12 +139,12 @@ pause_all() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #topic_partition_state{state = active, offset = 10},
-            ?PARTITION_2 => #topic_partition_state{state = active, offset = 12}
+            ?PARTITION_1 => #{offset => 10},
+            ?PARTITION_2 => #{offset => 12}
         }
-    },
+    }),
 
     % Pretend that there are some messages.
     mock_produce(0, 14),
@@ -196,24 +192,18 @@ pause_all() ->
     ?assertMatch({idle, _}, sys:get_state(Pid)),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
+init_topic_partition_states(InitStates) ->
+    kafine_fetch_response_tests:init_topic_partition_states(InitStates).
+
+cleanup_topic_partition_states(TopicPartitionStates) ->
+    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
+
 start_node_consumer(Broker, TopicPartitionStates) ->
-    % validate_options is a helper function; we only call it because we're testing kafine_node_consumer directly.
-    ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-    TopicNames = maps:keys(TopicPartitionStates),
-    TopicOptions =
-        #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
-    {ok, Pid} = kafine_node_consumer:start_link(
-        Broker,
-        ?CONNECTION_OPTIONS,
-        ConsumerOptions,
-        {test_consumer_callback, undefined},
-        self()
-    ),
-    ok = kafine_node_consumer:subscribe(Pid, TopicPartitionStates, TopicOptions),
-    {ok, Pid}.
+    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
 
 mock_produce(FirstOffset, LastOffset) ->
     meck:expect(

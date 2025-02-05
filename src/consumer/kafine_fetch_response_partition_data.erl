@@ -1,25 +1,39 @@
 -module(kafine_fetch_response_partition_data).
 -moduledoc false.
--export([fold/6]).
+-export([fold/5]).
 
 %% See the module comments in kafine_fetch_response.erl
 
 -include_lib("kernel/include/logger.hrl").
 
 fold(
-    FetchableTopicResponse = #{topic := Topic},
-    PartitionData = #{partition_index := PartitionIndex, records := RecordBatches},
+    Topic,
+    _PartitionData = #{
+        partition_index := PartitionIndex,
+        log_start_offset := LogStartOffset,
+        last_stable_offset := LastStableOffset,
+        high_watermark := HighWatermark,
+        records := RecordBatches
+    },
     FetchOffset,
     Callback,
-    Info,
     StateData1
 ) ->
+    Info = #{
+        % If old log segments are deleted, the log won't start at zero.
+        log_start_offset => LogStartOffset,
+        % The last stable offset marks the end of committed transactions.
+        last_stable_offset => LastStableOffset,
+        % The high watermark is the next offset to be written or read.
+        high_watermark => HighWatermark
+    },
+
     % The partition data can contain multiple record batches. We flatten it into a single record batch here.
     {ok, StateData2} = Callback:begin_record_batch(
         Topic, PartitionIndex, FetchOffset, Info, StateData1
     ),
     {NextOffset, State3, StateData3} = fold_record_batches(
-        FetchableTopicResponse, PartitionData, RecordBatches, FetchOffset, Callback, StateData2
+        Topic, PartitionIndex, RecordBatches, FetchOffset, Callback, StateData2
     ),
     case
         Callback:end_record_batch(
@@ -31,13 +45,13 @@ fold(
     end.
 
 fold_record_batches(
-    FetchableTopicResponse, PartitionData, RecordBatches, FetchOffset, Callback, StateData
+    Topic, PartitionIndex, RecordBatches, FetchOffset, Callback, StateData
 ) ->
     {_, {NextOffset, State2, StateData2}} = reduce_while(
         fun(RecordBatch, {_, _, StateData1}) ->
             fold_record_batch(
-                FetchableTopicResponse,
-                PartitionData,
+                Topic,
+                PartitionIndex,
                 RecordBatch,
                 FetchOffset,
                 Callback,
@@ -50,8 +64,8 @@ fold_record_batches(
     {NextOffset, State2, StateData2}.
 
 -spec fold_record_batch(
-    fetch_response:fetchable_topic_response_11(),
-    fetch_response:partition_data_11(),
+    kafine:topic(),
+    kafine:partition(),
     kafcod_record_batch:record_batch(),
     FetchOffset :: non_neg_integer(),
     Callback :: module(),
@@ -60,8 +74,8 @@ fold_record_batches(
     {cont | halt, {NextOffset :: non_neg_integer(), State :: active | paused, StateData2 :: term()}}.
 
 fold_record_batch(
-    FetchableTopicResponse,
-    PartitionData,
+    Topic,
+    PartitionIndex,
     RecordBatch = #{
         base_offset := BaseOffset,
         base_timestamp := _BaseTimestamp,
@@ -85,8 +99,8 @@ fold_record_batch(
     ]),
 
     fold_records(
-        FetchableTopicResponse,
-        PartitionData,
+        Topic,
+        PartitionIndex,
         RecordBatch,
         Records,
         FetchOffset,
@@ -95,8 +109,8 @@ fold_record_batch(
     ).
 
 fold_records(
-    FetchableTopicResponse,
-    PartitionData,
+    Topic,
+    PartitionIndex,
     RecordBatch = #{base_offset := BaseOffset},
     Records,
     FetchOffset,
@@ -110,8 +124,8 @@ fold_records(
     reduce_while(
         fun(Record = #{offset_delta := OffsetDelta}, {_, _, StateData1}) ->
             {Cont, {State2, StateData2}} = fold_record(
-                FetchableTopicResponse,
-                PartitionData,
+                Topic,
+                PartitionIndex,
                 RecordBatch,
                 Record,
                 FetchOffset,
@@ -126,8 +140,8 @@ fold_records(
     ).
 
 -spec fold_record(
-    fetch_response:fetchable_topic_response_11(),
-    fetch_response:partition_data_11(),
+    kafine:topic(),
+    kafine:partition(),
     kafcod_record_batch:record_batch(),
     kafcod_record:record(),
     FetchOffset :: non_neg_integer(),
@@ -136,8 +150,8 @@ fold_records(
 ) -> {cont | halt, {State :: active | paused, StateData2 :: term()}}.
 
 fold_record(
-    _FetchableTopicResponse = #{topic := Topic},
-    _PartitionData = #{partition_index := PartitionIndex},
+    Topic,
+    PartitionIndex,
     _RecordBatch = #{base_offset := BaseOffset, base_timestamp := BaseTimestamp},
     _Record = #{
         key := Key,

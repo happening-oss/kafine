@@ -1,4 +1,6 @@
 -module(kafine_shell).
+-moduledoc false.
+
 -export([start/0]).
 -export([attach_telemetry/0]).
 -export([telemetry_handler/4]).

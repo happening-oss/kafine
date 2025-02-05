@@ -3,7 +3,8 @@
 
 -export([
     canned_fetch_response_single_batch/0,
-    canned_fetch_response_two_batches/0
+    canned_fetch_response_two_batches/0,
+    split_fetch_response/1
 ]).
 
 -define(CALLBACK_STATE, ?MODULE).
@@ -31,13 +32,12 @@ cleanup(_) ->
 single_batch() ->
     FetchOffset = 3,
     FetchResponse = canned_fetch_response_single_batch(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = split_fetch_response(FetchResponse),
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
     ?assertMatch({6, active, ?CALLBACK_STATE}, FoldResult),
@@ -47,23 +47,23 @@ single_batch() ->
 two_batches() ->
     FetchOffset = 3,
     FetchResponse = canned_fetch_response_two_batches(),
-    {FetchableTopicResponse, PartitionData, Info} = split_fetch_response(FetchResponse),
+    {Topic, PartitionData} = split_fetch_response(FetchResponse),
     FoldResult = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse,
+        Topic,
         PartitionData,
         FetchOffset,
         test_consumer_callback,
-        Info,
         ?CALLBACK_STATE
     ),
     ?assertMatch({9, active, ?CALLBACK_STATE}, FoldResult),
     ok.
 
+% Given a canned fetch response, break it into the two pieces required by kafine_fetch_response_partition_data:fold().
 split_fetch_response(FetchResponse) ->
     #{responses := [FetchableTopicResponse]} = FetchResponse,
+    #{topic := Topic} = FetchableTopicResponse,
     #{partitions := [PartitionData]} = FetchableTopicResponse,
-    Info = maps:with([log_start_offset, last_stable_offset, high_watermark], PartitionData),
-    {FetchableTopicResponse, PartitionData, Info}.
+    {Topic, PartitionData}.
 
 canned_fetch_response_single_batch() ->
     % This is a fetch response containing [[3, 4, 5]].

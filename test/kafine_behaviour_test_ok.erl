@@ -2,6 +2,7 @@
 -behaviour(gen_server).
 -export([init/1, handle_call/3, handle_cast/2, terminate/1]).
 
+%% Used in kafine_behaviour_test.
 %% This module does implement the behaviour.
 
 init(_Args) ->

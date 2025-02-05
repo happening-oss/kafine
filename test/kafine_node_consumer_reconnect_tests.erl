@@ -34,12 +34,10 @@ initial_connect(Broker) ->
 
     ConnectionOptions = #{},
     ConsumerOptions = #{},
-    ConsumerCallback = {test_consumer_callback, undefined},
     {ok, NodeConsumer} = kafine_node_consumer:start_link(
         Broker,
         ConnectionOptions,
         ConsumerOptions,
-        ConsumerCallback,
         self()
     ),
 
@@ -61,12 +59,10 @@ should_reconnect_if_connection_drops(Broker) ->
 
     ConnectionOptions = #{},
     ConsumerOptions = #{},
-    ConsumerCallback = {test_consumer_callback, undefined},
     {ok, NodeConsumer} = kafine_node_consumer:start_link(
         Broker,
         ConnectionOptions,
         ConsumerOptions,
-        ConsumerCallback,
         self()
     ),
 

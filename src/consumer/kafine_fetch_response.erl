@@ -1,6 +1,6 @@
 -module(kafine_fetch_response).
 -moduledoc false.
--export([fold/4]).
+-export([fold/3]).
 
 %% A Kafka FetchResponse is a nested data structure:
 %%
@@ -41,9 +41,7 @@
 
 %% To maintain the state as we recurse through the FetchResponse, we use this record, named 'fold'.
 -record(fold, {
-    % We'll invoke this callback module at appropriate points.
-    callback :: module(),
-    % 'states' holds the fetch offset and callback state associated with each (topic, partition) in the response.
+    % 'states' holds the fetch offset and client process associated with each (topic, partition) in the response.
     states :: kafine_consumer:topic_partition_states(),
     % 'errors' holds the errors encountered for each (topic, partition).
     errors :: fold_errors()
@@ -55,13 +53,11 @@
 -spec fold(
     FetchResponse :: fetch_response:fetch_response_11(),
     States :: kafine_consumer:topic_partition_states(),
-    Callback :: module(),
     Metadata :: telemetry:event_metadata()
 ) -> {States2 :: kafine_consumer:topic_partition_states(), Errors :: fold_errors()}.
 
-fold(FetchResponse, States, Callback, Metadata) ->
+fold(FetchResponse, States, Metadata) ->
     Fold0 = #fold{
-        callback = Callback,
         states = States,
         errors = #{}
     },
@@ -168,39 +164,29 @@ fold_partition_data(
     % We're not interested in this topic/partition. For example, we unsubscribed while the Fetch request was in flight.
     Fold;
 fold_partition_data(
-    FetchableTopicResponse = #{topic := Topic},
+    _FetchableTopicResponse = #{topic := Topic},
     PartitionData = #{
         partition_index := PartitionIndex,
         error_code := ?NONE,
         records := _,
-        log_start_offset := LogStartOffset,
-        last_stable_offset := LastStableOffset,
+        log_start_offset := _,
+        last_stable_offset := _,
         high_watermark := HighWatermark,
         aborted_transactions := _,
         preferred_read_replica := _
     },
     TopicPartitionState,
     Metadata0,
-    Fold0 = #fold{states = States0, callback = Callback}
+    Fold0 = #fold{states = States0}
 ) ->
     Metadata = Metadata0#{partition_index => PartitionIndex},
 
     FetchOffset = TopicPartitionState#topic_partition_state.offset,
-    StateData1 = TopicPartitionState#topic_partition_state.state_data,
+    ClientPid = TopicPartitionState#topic_partition_state.client_pid,
 
-    Info = #{
-        % If old log segments are deleted, the log won't start at zero.
-        log_start_offset => LogStartOffset,
-        % The last stable offset marks the end of committed transactions.
-        last_stable_offset => LastStableOffset,
-        % The high watermark is the next offset to be written or read.
-        high_watermark => HighWatermark
-    },
-
-    {NextOffset, State2, StateData2} = kafine_fetch_response_partition_data:fold(
-        FetchableTopicResponse, PartitionData, FetchOffset, Callback, Info, StateData1
+    {ok, {NextOffset, State2}} = kafine_consumer_callback_process:partition_data(
+        ClientPid, Topic, PartitionData, FetchOffset
     ),
-
     telemetry:execute(
         [kafine, fetch, partition_data],
         #{
@@ -212,8 +198,8 @@ fold_partition_data(
         Metadata
     ),
 
-    TopicPartitionState2 = #topic_partition_state{
-        offset = NextOffset, state = State2, state_data = StateData2
+    TopicPartitionState2 = TopicPartitionState#topic_partition_state{
+        offset = NextOffset, state = State2
     },
     States = kafine_maps:put([Topic, PartitionIndex], TopicPartitionState2, States0),
     Fold0#fold{states = States}.

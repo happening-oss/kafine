@@ -1,7 +1,7 @@
 -module(kafine_node_consumer).
 -moduledoc false.
 -export([
-    start_link/5,
+    start_link/4,
     stop/1,
 
     info/1,
@@ -34,7 +34,6 @@
     Broker :: kafine:broker(),
     ConnectionOptions :: kafine:connection_options(),
     ConsumerOptions :: kafine:consumer_options(),
-    ConsumerCallback :: {Module :: module(), Args :: term()},
     Owner :: pid()
 ) ->
     start_ret().
@@ -43,7 +42,6 @@ start_link(
     Broker = #{host := _, port := _, node_id := _},
     ConnectionOptions,
     ConsumerOptions,
-    ConsumerCallback = {_, _},
     Owner
 ) ->
     gen_statem:start_link(
@@ -52,7 +50,6 @@ start_link(
             Broker,
             ConnectionOptions,
             ConsumerOptions,
-            ConsumerCallback,
             Owner
         ],
         start_options()
@@ -95,7 +92,6 @@ callback_mode() ->
     connection_options :: kafine:connection_options(),
 
     consumer_options :: kafine:consumer_options(),
-    consumer_callback :: module(),
 
     topic_options :: #{kafine:topic() := kafine:topic_options()},
     topic_partition_states :: kafine_consumer:topic_partition_states(),
@@ -109,7 +105,6 @@ init([
     Broker = #{node_id := NodeId},
     ConnectionOptions,
     ConsumerOptions,
-    _Callback = {CallbackModule, _CallbackArgs},
     Owner
 ]) ->
     process_flag(trap_exit, true),
@@ -124,7 +119,6 @@ init([
         connection_options = ConnectionOptions,
 
         consumer_options = ConsumerOptions,
-        consumer_callback = CallbackModule,
 
         topic_partition_states = #{},
         topic_options = #{},
@@ -175,7 +169,7 @@ handle_event(
         topic_options = TopicOptions0
     }
 ) ->
-    TopicPartitionStates2 = merge_topic_partition_states(
+    TopicPartitionStates2 = kafine_topic_partition_states:merge_topic_partition_states(
         TopicPartitionStates0, TopicPartitionStates1
     ),
     TopicOptions2 = kafine_topic_options:merge_options(TopicOptions0, TopicOptions1),
@@ -205,6 +199,7 @@ handle_event(
         fun(Topic, Partitions, Acc) ->
             lists:foldl(
                 fun(Partition, Acc2) ->
+                    % Returns the existing map if the key doesn't exist.
                     kafine_maps:remove([Topic, Partition], Acc2)
                 end,
                 Acc,
@@ -300,7 +295,9 @@ handle_event(
     _State,
     StateData = #state{owner = Owner, topic_partition_states = TopicPartitionStates}
 ) ->
-    {Discard, TopicPartitionStates2} = take_partition_states(TopicPartitions, TopicPartitionStates),
+    {Discard, TopicPartitionStates2} = kafine_topic_partition_states:take_partition_states(
+        TopicPartitions, TopicPartitionStates
+    ),
     Owner ! {give_away, Discard},
     {keep_state,
         StateData#state{
@@ -343,13 +340,12 @@ handle_response(
     fetch,
     _State = fetch,
     StateData = #state{
-        consumer_callback = ConsumerCallback,
         topic_partition_states = TopicPartitionStates,
         metadata = Metadata
     }
 ) ->
     {TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
-        FetchResponse, TopicPartitionStates, ConsumerCallback, Metadata
+        FetchResponse, TopicPartitionStates, Metadata
     ),
     StateData2 = StateData#state{
         topic_partition_states = TopicPartitionStates2,
@@ -440,43 +436,7 @@ collect_topic_partitions(Errors) ->
         Errors
     ).
 
-% TODO: Do we need a separate module for topic_partition_states()?
-merge_topic_partition_states(TopicPartitionStates0, TopicPartitionStates1) ->
-    maps:merge_with(fun combine_partition_states/3, TopicPartitionStates0, TopicPartitionStates1).
-
-% Suppress "Function ... only terminates with explicit exception" and "The created fun has no local return". Because
-% that's entirely the point.
-
--dialyzer({nowarn_function, combine_partition_states/3}).
-
-combine_partition_states(TopicName, PartitionStates0, PartitionStates1) ->
-    maps:merge_with(
-        fun(PartitionIndex, _, _) ->
-            error({already_subscribed, TopicName, PartitionIndex})
-        end,
-        PartitionStates0,
-        PartitionStates1
-    ).
-
--spec take_partition_states(
-    TopicPartitions :: [{kafine:topic(), kafine:partition()}],
-    TopicPartitionStates :: kafine_consumer:topic_partition_states()
-) ->
-    {
-        Discard :: kafine_consumer:topic_partition_states(),
-        Keep :: kafine_consumer:topic_partition_states()
-    }.
-
-take_partition_states(TopicPartitions, TopicPartitionStates) ->
-    take_partition_states(TopicPartitions, #{}, TopicPartitionStates).
-
-take_partition_states([], Take, Keep) ->
-    {Take, Keep};
-take_partition_states([{Topic, Partition} | TopicPartitions], Take, Keep) ->
-    {Value, Keep2} = kafine_maps:take([Topic, Partition], Keep),
-    Take2 = kafine_maps:put([Topic, Partition], Value, Take),
-    take_partition_states(TopicPartitions, Take2, Keep2).
-
+%% Build the object returned in the 'info' call.
 build_info(
     State,
     _StateData = #state{topic_partition_states = TopicPartitionStates}
@@ -506,7 +466,7 @@ build_info(
         topic_partitions => TopicPartitions
     }.
 
-% For logging, we want to see Topic => Partition => Offset
+%% For logging, we want to see Topic => Partition => Offset
 summarise_fetch_request(_FetchRequest = #{topics := Topics}) ->
     lists:foldl(
         fun(#{topic := Topic, partitions := Partitions}, Acc) ->

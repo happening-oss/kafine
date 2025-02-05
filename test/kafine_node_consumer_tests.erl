@@ -1,7 +1,7 @@
 -module(kafine_node_consumer_tests).
 -include_lib("eunit/include/eunit.hrl").
-
--include("src/consumer/kafine_topic_partition_state.hrl").
+% Used by other tests.
+-export([start_node_consumer/2]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
@@ -17,6 +17,8 @@ setup() ->
     end),
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+
+    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
 
     meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_fetch, [passthrough]),
@@ -43,7 +45,6 @@ start_node_consumer(Broker, TopicPartitionStates) ->
         Broker,
         ?CONNECTION_OPTIONS,
         ConsumerOptions,
-        {test_consumer_callback, undefined},
         self()
     ),
     ok = kafine_node_consumer:subscribe(Pid, TopicPartitionStates, TopicOptions),
@@ -53,12 +54,12 @@ empty_topic() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #topic_partition_state{state = active, offset = 0},
-            62 => #topic_partition_state{state = active, offset = 0}
+            61 => #{},
+            62 => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % Wait for two calls to end_record_batch (2 partitions => 2 calls).
@@ -71,6 +72,7 @@ empty_topic() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -78,11 +80,11 @@ empty_topic_repeated_fetch() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #topic_partition_state{state = active, offset = 0}
+            61 => #{}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % Wait for two calls to end_record_batch, since we should repeat.
@@ -95,6 +97,7 @@ empty_topic_repeated_fetch() ->
     ),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -102,12 +105,12 @@ offset_out_of_range() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
-    TopicPartitionStates = #{
+    TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
             % Note the -1 offset.
-            61 => #topic_partition_state{state = active, offset = -1}
+            61 => #{offset => -1}
         }
-    },
+    }),
     {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
 
     % The node consumer should issue ListOffsets, then Fetch, so we should see end_record_batch.
@@ -117,5 +120,12 @@ offset_out_of_range() ->
     meck:wait(test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
 
     kafine_node_consumer:stop(Pid),
+    cleanup_topic_partition_states(TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
+
+init_topic_partition_states(InitStates) ->
+    kafine_fetch_response_tests:init_topic_partition_states(InitStates).
+
+cleanup_topic_partition_states(TopicPartitionStates) ->
+    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).

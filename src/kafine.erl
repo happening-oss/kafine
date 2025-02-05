@@ -1,4 +1,9 @@
 -module(kafine).
+-include("kafine_doc.hrl").
+?MODULEDOC("""
+Kafka client for Erlang.
+""").
+
 -export([
     start_topic_consumer/8,
     stop_topic_consumer/1,
@@ -34,6 +39,19 @@
 -type offset_reset_policy() :: earliest | latest | module().
 -type isolation_level() :: read_uncommitted | read_committed.
 
+?DOC("""
+Options that control the behaviour of `m:kafine_connection`.
+
+- `client_id`: Optional; defaults to `<<"kafine">>`.
+
+## Client ID
+
+The client ID can be used to correlate requests in broker logging, which can be helpful for troubleshooting.
+It also be used to enforce client quotas.
+
+A client ID logically identifies an application making a request. This means that it should be the application name,
+rather than the host name.
+""").
 -type connection_options() :: #{
     client_id := binary()
 }.
@@ -53,6 +71,20 @@
     offset_reset_policy := offset_reset_policy()
 }.
 
+?DOC("""
+- `assignor`: A module that implements the `m:kafine_assignor` behaviour.
+  The consumer group leader uses it to assign topics and partitions to members of the consumer group.
+  Use, e.g., `m:kafine_range_assignor`.
+- `subscription_callback`: A tuple of `{Module, Args}`.
+  Advanced use only; leave it unset to use the recommended default.
+  The module is expected to implement the `m:kafine_subscription_callback` behaviour.
+- `assignment_callback`: A tuple of `{Module, Args}`.
+  Advanced use only; leave it unset to use the recommended default.
+  The module is expected to implement the `m:kafine_assignment_callback` behaviour.
+- `heartbeat_interval_ms`, `session_timeout_ms`, `rebalance_timeout_ms`:
+  Used to control the behaviour of the consumer coordinator.
+  See the Kafka documentation for `heartbeat.interval.ms`, etc., for details.
+""").
 -type membership_options() :: #{
     assignor => module(),
     subscription_callback => {module(), term()},
@@ -95,13 +127,22 @@
 % TODO: This isn't actually the correct type; it keeps eqalizer happy.
 -type start_group_consumer_ret() :: {ok, undefined | pid()}.
 
+?DOC("""
+Start a simple consumer for one or more topics.
+
+## Arguments
+- `Ref` is used to refer to the topic consumer in future calls, for example when stopping it.
+- `Bootstrap` is any one of the brokers in the cluster. It is used to bootstrap the consumer.
+- `ConnectionOptions` passes options to the network connections to the brokers. See `t:connection_options/0`.
+""").
+
 -spec start_topic_consumer(
     Ref :: consumer_ref(),
     Bootstrap :: broker(),
     ConnectionOptions :: connection_options(),
     ConsumerOptions :: consumer_options(),
     SubscriberOptions :: subscriber_options(),
-    {Callback :: module(), Args :: term()},
+    ConsumerCallback :: {CallbackModule :: module(), CallbackArgs :: term()},
     Topics :: [topic()],
     TopicOptions :: #{topic() := topic_options()}
 ) -> start_topic_consumer_ret().
@@ -131,6 +172,7 @@ start_topic_consumer(
             ]}
     },
     SubscriberOptions = maps:merge(DefaultSubscriberOptions, SubscriptionOptions0),
+    ok = kafine_behaviour:verify_callbacks_exported(kafine_consumer_callback, CallbackModule),
 
     Id = make_consumer_id(Ref),
     ChildSpec = #{
@@ -157,6 +199,9 @@ start_topic_consumer(
 stop_topic_consumer(Ref) ->
     stop_consumer_sup(Ref).
 
+?DOC("""
+Start a member of a consumer group.
+""").
 %% Ref is used to refer to the consumer later, e.g., in kafine:stop_group_consumer/1.
 %% Broker is the bootstrap broker.
 %% GroupId is the name of the consumer group.
@@ -166,7 +211,7 @@ stop_topic_consumer(Ref) ->
 
 -spec start_group_consumer(
     Ref :: consumer_ref(),
-    Broker :: broker(),
+    Bootstrap :: broker(),
     ConnectionOptions :: kafine:connection_options(),
     GroupId :: binary(),
     MembershipOptions :: membership_options(),
@@ -178,12 +223,12 @@ stop_topic_consumer(Ref) ->
 
 start_group_consumer(
     Ref,
-    Broker,
+    Bootstrap,
     ConnectionOptions,
     GroupId,
     SubscriberOptions0,
     ConsumerOptions,
-    ConsumerCallback,
+    ConsumerCallback = {CallbackModule, _CallbackArgs},
     Topics,
     TopicOptions
 ) ->
@@ -196,6 +241,7 @@ start_group_consumer(
             ]}
     },
     SubscriberOptions = maps:merge(DefaultSubscriberOptions, SubscriberOptions0),
+    ok = kafine_behaviour:verify_callbacks_exported(kafine_consumer_callback, CallbackModule),
 
     Id = make_consumer_id(Ref),
     ChildSpec = #{
@@ -203,7 +249,7 @@ start_group_consumer(
         start =>
             {kafine_consumer_sup, start_group_consumer_linked, [
                 Ref,
-                Broker,
+                Bootstrap,
                 ConnectionOptions,
                 GroupId,
                 SubscriberOptions,

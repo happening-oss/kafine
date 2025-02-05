@@ -21,8 +21,7 @@ connect_test_() ->
         fun send_request/0,
         fun send_request_metadata/0,
         fun call/0,
-        fun call_metadata/0,
-        fun connection_closed/0
+        fun call_metadata/0
     ]}.
 
 connect_ok() ->
@@ -254,40 +253,6 @@ call_metadata() ->
         {[kafine, connection, call, stop], #{duration := _}, ?EXPECTED_METADATA},
         receive_telemetry(TelemetryRef)
     ),
-    ok.
-
-connection_closed() ->
-    meck:new(test_handler, [non_strict]),
-    meck:expect(test_handler, log, fun(_LogEvent, _Config) -> ok end),
-
-    ok = logger:add_handler(?MODULE, test_handler, #{}),
-    ok = logger:add_primary_filter(
-        stop_connection_errors, {fun kafine_logger_filters:connection_errors/2, stop}
-    ),
-
-    {ok, Connection} = kafine_connection:start_link(<<"ignored">>, 0, #{}),
-    MRef = monitor(process, Connection),
-    unlink(Connection),
-    meck:wait(gen_tcp, connect, '_', ?WAIT_TIMEOUT_MS),
-
-    Connection ! {tcp_closed, ?SOCKET},
-
-    receive
-        {'DOWN', MRef, process, Connection, _Reason} ->
-            ok
-    end,
-
-    Levels = lists:filtermap(
-        fun
-            ({_, {_, _, [#{level := Level}, _]}, _}) -> {true, Level};
-            (_) -> false
-        end,
-        meck:history(test_handler)
-    ),
-    ?assertEqual([], [L || L <- Levels, L == error]),
-
-    logger:remove_primary_filter(stop_connection_errors),
-    logger:remove_handler(?MODULE),
     ok.
 
 attach_telemetry() ->

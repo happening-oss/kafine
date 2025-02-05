@@ -58,12 +58,20 @@ handle_record(
     {ok, State}.
 
 end_record_batch(
-    Topic, Partition, NextOffset, _Info = #{high_watermark := HighWatermark}, State = #state{current_offset = CurrentOffset}
+    Topic,
+    Partition,
+    NextOffset,
+    _Info = #{high_watermark := HighWatermark},
+    State = #state{current_offset = CurrentOffset}
 ) when NextOffset == HighWatermark, CurrentOffset /= NextOffset ->
     report_parity(Topic, Partition, NextOffset),
     {ok, State#state{stage = subsequent_fetches}};
 end_record_batch(
-    Topic, Partition, NextOffset, _Info = #{high_watermark := HighWatermark}, State = #state{stage = Stage}
+    Topic,
+    Partition,
+    NextOffset,
+    _Info = #{high_watermark := HighWatermark},
+    State = #state{stage = Stage}
 ) when NextOffset == HighWatermark, Stage == first_fetch ->
     report_parity(Topic, Partition, NextOffset),
     {ok, State#state{stage = subsequent_fetches}};

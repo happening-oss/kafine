@@ -2,21 +2,25 @@
 
 Kafine is a Kafka client for Erlang.
 
+Kafine aims to achieve better performance and compatibility than existing Kafka client libraries in the BEAM ecosystem.
+It does this by using the automatically-generated message codecs in the `kafcod` project.
+
+While Kafine is all-new, and still a bit rough around the edges, it’s based on years of experience using Kafka in
+production with our existing internal Kafka libraries.
+
 ## Stability
 
-We're beginning to use it in production, but it's still a bit rough around the edges. Consider it unstable for now.
+Note that this release is currently considered unstable. We’re using it in production, but only for a small number of
+non-critical workloads. We’re working towards being production ready, and we’d appreciate feedback from the community.
 
 ## Examples
 
 The following examples assume that you've got a Kafka broker (or cluster) running at `localhost:9092`.
 
-If you want to use docker compose, there's a Kafka cluster (using ZooKeeper) defined in the `docker` directory, which you can use as follows:
+If you want to use docker compose, there's a Kafka cluster (using ZooKeeper) defined in the `docker` directory; see the
+`README.md` file in that directory for details.
 
-```sh
-make -C docker up  # start ZK, the brokers (and kafka-ui).
-# ... wait for a few minutes.
-make -C docker create-example-topics  # create some example topics
-```
+Start the Erlang shell.
 
 ```sh
 rebar3 shell
