@@ -19,7 +19,7 @@
 start_link(Ref, Topic, PartitionIndex, Callback, CallbackArgs) ->
     gen_server:start_link(?MODULE, [Ref, Topic, PartitionIndex, Callback, CallbackArgs], start_options()).
 
-start_options() -> [{debug, kafine_trace:debug(#{mfa => {?MODULE, handle_event, 4}})}].
+start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
 
 stop(Pid) ->
     gen_server:stop(Pid).

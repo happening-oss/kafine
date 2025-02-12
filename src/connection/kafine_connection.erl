@@ -26,9 +26,6 @@
     decoder_fun/0
 ]).
 
--define(DEFAULT_CLIENT_ID, <<"kafine">>).
--define(DEFAULT_METADATA, #{}).
-
 -include_lib("kernel/include/logger.hrl").
 
 -type encoder_fun() :: fun((map()) -> iodata()).
@@ -43,13 +40,12 @@ start_link(Broker = #{host := Host, port := Port}, Options) when
 ->
     gen_statem:start_link(
         ?MODULE,
-        {convert_broker(Broker), validate_options(Options)},
+        [
+            convert_broker(Broker),
+            kafine_connection_options:validate_options(Options)
+        ],
         start_options()
     ).
-
-validate_options(Options) ->
-    DefaultOptions = #{client_id => ?DEFAULT_CLIENT_ID, metadata => ?DEFAULT_METADATA},
-    kafine_options:validate_options(Options, DefaultOptions, [], false).
 
 start_link(Host, Port, Options) ->
     start_link(#{host => Host, port => Port}, Options).
@@ -59,8 +55,7 @@ convert_broker(Broker = #{host := Host}) when is_list(Host) ->
 convert_broker(Broker) ->
     Broker.
 
-% start_options() -> [].
-start_options() -> [{debug, kafine_trace:debug(#{mfa => {?MODULE, handle_event, 4}})}].
+start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
 
 stop(Connection) when is_pid(Connection) ->
     gen_statem:stop(Connection).
@@ -108,19 +103,19 @@ call(Pid, Encoder, Args, Decoder, Metadata) when
     Metadata2 = maps:merge(Metadata, Metadata1),
 
     % Call the connection process: encode and send the request.
-    {ok, Reply} = telemetry:span(
+    DecodedResponse = kafine_connection_telemetry:span(
         [kafine, connection, call],
         Metadata2,
         fun() ->
             % We *don't* use the merged metadata here, because it'll get merged again later.
-            Result = gen_statem:call(Pid, {call, Encoder, Args, Metadata}),
-            {Result, Metadata2}
+            {ok, Encoded} = gen_statem:call(Pid, {call, Encoder, Args, Metadata}),
+            % We decode the response in the caller. This (hopefully) avoids sharing binary fragments between the two processes.
+            {Response, <<>>} = Decoder(Encoded),
+            {Response, Metadata2}
         end
     ),
 
-    % We decode the response in the caller. This (hopefully) avoids sharing binary fragments between the two processes.
-    {Response, <<>>} = Decoder(Reply),
-    {ok, maps:without([correlation_id], Response)};
+    {ok, maps:without([correlation_id], DecodedResponse)};
 call(Pid, Encoder, Args, Decoder, Metadata) ->
     erlang:error(badarg, [Pid, Encoder, Args, Decoder, Metadata]).
 
@@ -141,7 +136,7 @@ send_request(Pid, Encoder, Args, Decoder, Label0, ReqIdCollection, Metadata) whe
 ->
     Metadata1 = kafine_telemetry:get_metadata(Pid),
     Metadata2 = maps:merge(Metadata, Metadata1),
-    Span = kafine_telemetry:start_span([kafine, connection, request], Metadata2),
+    Span = kafine_connection_telemetry:start_span([kafine, connection, request], Metadata2),
     % We'll need the decoder later; we'll stash it in the label along with the original label and telemetry span.
     Label = {Label0, Span, Decoder},
     gen_statem:send_request(Pid, {call, Encoder, Args, Metadata}, Label, ReqIdCollection).
@@ -160,15 +155,20 @@ send_request(Pid, Encoder, Args, Decoder, Label0, ReqIdCollection, Metadata) whe
 check_response(Msg, ReqIdCollection) ->
     check_response(gen_statem:check_response(Msg, ReqIdCollection, true)).
 
-check_response({{reply, {ok, Encoded}}, _Label = {Label0, Span, Decoder}, ReqIdCollection2}) ->
+check_response({
+    {reply, {ok, Encoded}}, _Label = {Label0, Span, Decoder}, ReqIdCollection2
+}) ->
     % We stashed the decoder in the label.
     {Response, <<>>} = Decoder(Encoded),
-    kafine_telemetry:stop_span(
-        [kafine, connection, request], kafine_response_telemetry:enrich_span(Response, Span)
-    ),
+    kafine_connection_telemetry:stop_span([kafine, connection, request], Span, Response),
     {{ok, maps:without([correlation_id], Response)}, Label0, ReqIdCollection2};
 check_response({{error, Reason}, _Label = {Label0, Span, _Decoder}, ReqIdCollection2}) ->
-    kafine_telemetry:span_exception([kafine, connection, request], Span, error, Reason),
+    kafine_connection_telemetry:span_exception(
+        [kafine, connection, request],
+        Span,
+        error,
+        Reason
+    ),
     {{error, Reason}, Label0, ReqIdCollection2};
 check_response(Result) when Result == no_request; Result == no_reply ->
     Result.
@@ -181,7 +181,7 @@ reqids_new() ->
 reqids_size(ReqIdCollection) ->
     gen_statem:reqids_size(ReqIdCollection).
 
-init({Broker, #{client_id := ClientId, metadata := Metadata0}}) ->
+init([Broker, #{client_id := ClientId, metadata := Metadata0}]) ->
     Metadata = maps:merge(maps:with([host, port, node_id], Broker), Metadata0),
     logger:set_process_metadata(Metadata),
     kafine_telemetry:put_metadata(Metadata),

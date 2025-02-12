@@ -15,7 +15,10 @@
     subscribed_to/1
 ]).
 
--export_type([span/0]).
+-export_type([
+    span/0,
+    span_function/1
+]).
 
 -define(TELEMETRY_KEY, ?MODULE).
 
@@ -39,10 +42,12 @@ get_metadata(Pid) when is_pid(Pid) ->
             proplists:get_value(?TELEMETRY_KEY, D, #{})
     end.
 
+-type span_function(SpanResult) :: fun(() -> {SpanResult, telemetry:event_metadata()}).
+
 -spec span(
     EventPrefix :: telemetry:event_prefix(),
     StartMetadata :: telemetry:event_metadata(),
-    SpanFunction :: fun(() -> {SpanResult, telemetry:event_metadata()})
+    SpanFunction :: span_function(SpanResult)
 ) -> SpanResult.
 
 span(EventPrefix, StartMetadata, SpanFunction) ->

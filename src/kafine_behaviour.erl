@@ -14,8 +14,9 @@ verify_callbacks_exported(Behaviour, Module) when is_atom(Behaviour), is_atom(Mo
     case erlang:function_exported(Behaviour, behaviour_info, 1) of
         true ->
             % Work out the required callbacks by subtracting the optional callbacks from the list of all callbacks.
-            AllCallbacks = apply(Behaviour, behaviour_info, [callbacks]),
-            OptionalCallbacks = apply(Behaviour, behaviour_info, [optional_callbacks]),
+
+            AllCallbacks = get_callbacks(Behaviour),
+            OptionalCallbacks = get_optional_callbacks(Behaviour),
             RequiredCallbacks = AllCallbacks -- OptionalCallbacks,
 
             % Are those callbacks exported?
@@ -46,6 +47,19 @@ verify_callbacks_exported(Behaviour, Module, RequiredCallbacks, Exports) ->
                 }}
             )
     end.
+
+-type function_name() :: atom().
+
+-spec get_callbacks(Behaviour :: module()) -> [{function_name(), arity()}].
+get_callbacks(Behaviour) -> delete_type_(apply(Behaviour, behaviour_info, [callbacks])).
+
+-spec get_optional_callbacks(Behaviour :: module()) -> [{function_name(), arity()}].
+get_optional_callbacks(Behaviour) -> delete_type_(apply(Behaviour, behaviour_info, [optional_callbacks])).
+
+% Workaround: eqwalizer thinks that apply() returns `term()` and refuses to accept that it might return anything else.
+delete_type_(Value) ->
+    % The underscore suffix in the name means "ugly".
+    Value.
 
 ensure_module_loaded(Module) ->
     case erlang:module_loaded(Module) of

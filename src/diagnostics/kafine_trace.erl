@@ -2,9 +2,9 @@
 %%% Convert `gen_server` and `gen_statem` tracing into calls to `logger`.
 -moduledoc false.
 -export([
-    debug/0,
-    debug/1,
-    debug/2
+    debug_options/0,
+    debug_options/1,
+    debug_options/2
 ]).
 
 -record(trace, {
@@ -12,32 +12,42 @@
     metadata :: logger:metadata()
 }).
 
-% TODO: Calling this 'debug', when the level is 'debug' is a bit confusing. Sort that out.
-debug() ->
-    debug(debug, #{}).
+-spec debug_options() -> [sys:debug_option()].
+debug_options() ->
+    debug_options(debug, #{}).
 
-debug(Metadata) ->
-    debug(debug, Metadata).
+-spec debug_options(Metadata :: logger:metadata()) -> [sys:debug_option()].
+debug_options(Metadata) ->
+    debug_options(debug, Metadata).
 
-debug(Level, Metadata) ->
-    % TODO: Maybe we'd prefer to be able to define a level in configuration. Question: is that a min/max level
-    % (whichever way round) -- so we'd filter on 'Level', or the level at which to log -- so it'd replace 'Level'?
-    maybe_debug(Level, Metadata, application:get_env(kafine, enable_trace, false)).
+-spec debug_options(Level :: logger:level(), Metadata :: logger:metadata()) -> [sys:debug_option()].
+debug_options(Level, Metadata) ->
+    maybe_debug(Level, Metadata, is_trace_enabled()).
 
+-spec is_trace_enabled() -> true | false.
+is_trace_enabled() ->
+    case application:get_env(kafine, enable_trace, false) of
+        true -> true;
+        _ -> false
+    end.
+
+-spec maybe_debug(Level :: logger:level(), Metadata :: logger:metadata(), Enable :: true | false) ->
+    [sys:debug_option()].
 maybe_debug(Level, Metadata, _Enable = true) ->
-    TraceState = #trace{level = Level, metadata = Metadata},
     % A word of caution: You can't pass a 2-tuple (i.e. a single-item record) as the function state in 'install',
-    % because OTP mistakes {Func, {trace, Level}} for {FuncId, {Func, FuncState}}.
+    % because OTP mistakes {Func, {trace, Level}} for {FuncId, {Func, FuncState}}, which is how it internally stores
+    % {FuncId, Func, FuncState}; see https://github.com/erlang/otp/blob/master/lib/stdlib/src/sys.erl#L1069
     %
-    % To fix this, we're careful (even when we've got a 3-tuple) to pass the module name as FuncId. This has the bonus
-    % that we won't get installed multiple times.
-    [{install, {?MODULE, {fun tracer/3, TraceState}}}];
+    % To fix this, we're careful to use the 3-tuple form, passing the module name as FuncId. This has the bonus that we
+    % won't get installed multiple times.
+    FuncId = ?MODULE,
+    Func = fun tracer/3,
+    FuncState = #trace{level = Level, metadata = Metadata},
+    [{install, {FuncId, Func, FuncState}}];
 maybe_debug(_Level, _Metadata, _Enable = false) ->
+    % If 'enable_trace' is false, use an empty list. gen_server and gen_statem will spot this and optimise for it.
     [].
 
-% TODO: tracer only understands (some of) gen_statem right now. So it needs improving in two directions: more gen_statem
-% support (see gen_statem:print_event/3); gen_server (and gen_event?) support. The second might require breaking it up
-% and detecting the caller's behaviour.
 tracer(
     TraceState = #trace{level = Level, metadata = Metadata},
     _Event = {in, Event, State},

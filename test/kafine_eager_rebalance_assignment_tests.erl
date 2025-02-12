@@ -65,15 +65,17 @@ call_assignment_callbacks_after_join_leader() ->
     end,
 
     % Check we call the subscription callback
-    meck:called(
-        test_membership_callback,
-        subscribe_partitions,
-        [
-            '_',
-            meck:is(is_assignment(#{?TOPIC_NAME => [0, 1, 2, 3]})),
+    ?assert(
+        meck:called(
+            test_membership_callback,
+            subscribe_partitions,
+            [
+                '_',
+                meck:is(is_assignment(#{?TOPIC_NAME => [0, 1, 2, 3]})),
+                '_'
+            ],
             '_'
-        ],
-        '_'
+        )
     ),
 
     ExpectedAdditional = #{?TOPIC_NAME => [0, 1, 2, 3]},
@@ -127,15 +129,17 @@ call_assignments_callbacks_after_join_follower() ->
     end,
 
     % Check we call the subscription callback
-    meck:called(
-        test_membership_callback,
-        subscribe_partitions,
-        [
-            '_',
-            meck:is(is_assignment(#{?TOPIC_NAME => [0, 1, 2, 3]})),
+    ?assert(
+        meck:called(
+            test_membership_callback,
+            subscribe_partitions,
+            [
+                '_',
+                meck:is(is_assignment(#{?TOPIC_NAME => [0, 1, 2, 3]})),
+                '_'
+            ],
             '_'
-        ],
-        '_'
+        )
     ),
 
     ExpectedAdditional = #{?TOPIC_NAME => [0, 1, 2, 3]},

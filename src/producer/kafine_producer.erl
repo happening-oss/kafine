@@ -43,7 +43,7 @@ start_link(Ref, Bootstrap, ConnectionOptions) ->
         start_options()
     ).
 
-start_options() -> [{debug, kafine_trace:debug(#{mfa => {?MODULE, handle_event, 4}})}].
+start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
 
 -spec via(Ref :: ref()) -> {via, kafine_via, {module(), ref()}}.
 

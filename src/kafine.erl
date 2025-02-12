@@ -41,8 +41,11 @@ Kafka client for Erlang.
 
 ?DOC("""
 Options that control the behaviour of `m:kafine_connection`.
+Note that these set of options will be used for all connections of a given concern.
+For example, the connection options passed into a `kafine_consumer` will be used for all connections made for that consumer.
 
 - `client_id`: Optional; defaults to `<<"kafine">>`.
+- `metadata`: Optional; defaults to `#{}`.
 
 ## Client ID
 
@@ -51,9 +54,15 @@ It also be used to enforce client quotas.
 
 A client ID logically identifies an application making a request. This means that it should be the application name,
 rather than the host name.
+
+## Metadata
+
+Allows for extra pieces of telemetry information to be made available for `kafine_connection`.
+Kafine by default appends `host`, `port` and `node_id` to the `metadata`.
 """).
 -type connection_options() :: #{
-    client_id := binary()
+    client_id := binary(),
+    metadata := map()
 }.
 
 % TODO: fetch_options, instead?

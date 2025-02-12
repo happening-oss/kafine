@@ -1,7 +1,10 @@
 -module(kafine_node_consumer_tests).
 -include_lib("eunit/include/eunit.hrl").
 % Used by other tests.
--export([start_node_consumer/2]).
+-export([
+    start_node_consumer/1,
+    start_node_consumer/2
+]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
@@ -35,18 +38,21 @@ kafine_node_consumer_test_() ->
         fun offset_out_of_range/0
     ]}.
 
-start_node_consumer(Broker, TopicPartitionStates) ->
+start_node_consumer(Broker) ->
     % validate_options is a helper function; we only call it because we're testing kafine_node_consumer directly.
     ConsumerOptions = kafine_consumer_options:validate_options(#{}),
-    TopicNames = maps:keys(TopicPartitionStates),
-    TopicOptions =
-        #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
-    {ok, Pid} = kafine_node_consumer:start_link(
+    kafine_node_consumer:start_link(
         Broker,
         ?CONNECTION_OPTIONS,
         ConsumerOptions,
         self()
-    ),
+    ).
+
+start_node_consumer(Broker, TopicPartitionStates) ->
+    {ok, Pid} = start_node_consumer(Broker),
+    TopicNames = maps:keys(TopicPartitionStates),
+    TopicOptions =
+        #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
     ok = kafine_node_consumer:subscribe(Pid, TopicPartitionStates, TopicOptions),
     {ok, Pid}.
 
