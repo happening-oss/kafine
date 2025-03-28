@@ -18,6 +18,7 @@ Kafka client for Erlang.
     partition/0,
     offset/0,
     timestamp/0,
+    offset_timestamp/0,
     error_code/0,
     isolation_level/0
 ]).
@@ -77,35 +78,50 @@ Kafine by default appends `host`, `port` and `node_id` to the `metadata`.
 }.
 
 -type topic_options() :: #{
+    initial_offset := offset(),
     offset_reset_policy := offset_reset_policy()
 }.
 
 ?DOC("""
+Used when starting a group consumer.
+
 - `assignor`: A module that implements the `m:kafine_assignor` behaviour.
   The consumer group leader uses it to assign topics and partitions to members of the consumer group.
   Use, e.g., `m:kafine_range_assignor`.
-- `subscription_callback`: A tuple of `{Module, Args}`.
-  Advanced use only; leave it unset to use the recommended default.
-  The module is expected to implement the `m:kafine_subscription_callback` behaviour.
 - `assignment_callback`: A tuple of `{Module, Args}`.
   Advanced use only; leave it unset to use the recommended default.
   The module is expected to implement the `m:kafine_assignment_callback` behaviour.
+  It's called before and after partitions are assigned. Used, for example, to create/delete per-partition ETS tables.
+- `subscription_callback`: A tuple of `{Module, Args}`.
+  Advanced use only; leave it unset to use the recommended default.
+  The module is expected to implement the `m:kafine_subscription_callback` behaviour.
 - `heartbeat_interval_ms`, `session_timeout_ms`, `rebalance_timeout_ms`:
   Used to control the behaviour of the consumer coordinator.
   See the Kafka documentation for `heartbeat.interval.ms`, etc., for details.
 """).
 -type membership_options() :: #{
     assignor => module(),
-    subscription_callback => {module(), term()},
     assignment_callback := {module(), term()},
+    subscription_callback => {module(), term()},
     heartbeat_interval_ms => non_neg_integer(),
     session_timeout_ms => non_neg_integer(),
     rebalance_timeout_ms => non_neg_integer()
 }.
 
+?DOC("""
+Used when starting a topic consumer.
+
+- `assignment_callback`: A tuple of `{Module, Args}`.
+  Advanced use only; leave it unset to use the recommended default.
+  The module is expected to implement the `m:kafine_assignment_callback` behaviour.
+  It's called before and after partitions are assigned. Used, for example, to create/delete per-partition ETS tables.
+- `subscription_callback`: A tuple of `{Module, Args}`.
+  Advanced use only; leave it unset to use the recommended default.
+  The module is expected to implement the `m:kafine_subscription_callback` behaviour.
+""").
 -type subscriber_options() :: #{
-    subscription_callback => {module(), term()},
-    assignment_callback := {module(), term()}
+    assignment_callback := {module(), term()},
+    subscription_callback => {module(), term()}
 }.
 
 % TODO: These types should be in kafcod, maybe?
@@ -113,8 +129,9 @@ Kafine by default appends `host`, `port` and `node_id` to the `metadata`.
 -type client_id() :: binary().
 -type topic() :: binary().
 -type partition() :: non_neg_integer().
--type offset() :: non_neg_integer().
+-type offset() :: earliest | latest | non_neg_integer().
 -type timestamp() :: non_neg_integer().
+-type offset_timestamp() :: earliest | latest | neg_integer().
 -type error_code() :: integer().
 
 -define(CONSUMER_SUPERVISOR, kafine_consumer_sup_sup).
@@ -164,21 +181,23 @@ start_topic_consumer(
     SubscriptionOptions0,
     Callback = {CallbackModule, _},
     Topics,
-    TopicOptions
+    TopicOptions0
 ) when
     is_map(ConnectionOptions),
     is_map(ConsumerOptions),
     is_atom(CallbackModule),
     is_list(Topics),
-    is_map(TopicOptions)
+    is_map(TopicOptions0)
 ->
-    kafine_topic_options:validate_options(Topics, TopicOptions),
+    TopicOptions = kafine_topic_options:validate_options(Topics, TopicOptions0),
+    DefaultAssignmentCallback =
+        {kafine_noop_assignment_callback, undefined},
+    DefaultSubscriptionCallback =
+        {kafine_topic_consumer_subscription_callback, [Ref, TopicOptions]},
+
     DefaultSubscriberOptions = #{
-        assignment_callback => {kafine_noop_assignment_callback, undefined},
-        subscription_callback =>
-            {kafine_topic_consumer_subscription_callback, [
-                Ref, TopicOptions
-            ]}
+        assignment_callback => DefaultAssignmentCallback,
+        subscription_callback => DefaultSubscriptionCallback
     },
     SubscriberOptions = maps:merge(DefaultSubscriberOptions, SubscriptionOptions0),
     ok = kafine_behaviour:verify_callbacks_exported(kafine_consumer_callback, CallbackModule),
@@ -198,10 +217,7 @@ start_topic_consumer(
             ]}
     },
 
-    {ok, _GSup} = supervisor:start_child(?CONSUMER_SUPERVISOR, ChildSpec),
-    Consumer = kafine_via:whereis_name({kafine_consumer, Ref}),
-
-    {ok, Consumer}.
+    supervisor:start_child(?CONSUMER_SUPERVISOR, ChildSpec).
 
 -spec stop_topic_consumer(Ref :: consumer_ref()) -> ok.
 
@@ -239,14 +255,14 @@ start_group_consumer(
     ConsumerOptions,
     ConsumerCallback = {CallbackModule, _CallbackArgs},
     Topics,
-    TopicOptions
+    TopicOptions0
 ) ->
-    kafine_topic_options:validate_options(Topics, TopicOptions),
+    TopicOptions = kafine_topic_options:validate_options(Topics, TopicOptions0),
     DefaultSubscriberOptions = #{
         assignment_callback => {kafine_noop_assignment_callback, undefined},
         subscription_callback =>
             {kafine_group_consumer_subscription_callback, [
-                Ref, GroupId, TopicOptions, kafine_group_consumer_offset_callback
+                Ref, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
             ]}
     },
     SubscriberOptions = maps:merge(DefaultSubscriberOptions, SubscriberOptions0),
@@ -267,9 +283,7 @@ start_group_consumer(
                 Topics
             ]}
     },
-    {ok, _GSup} = supervisor:start_child(?CONSUMER_SUPERVISOR, ChildSpec),
-    Consumer = kafine_via:whereis_name({kafine_consumer, Ref}),
-    {ok, Consumer}.
+    supervisor:start_child(?CONSUMER_SUPERVISOR, ChildSpec).
 
 -spec stop_group_consumer(Ref :: consumer_ref()) -> ok.
 

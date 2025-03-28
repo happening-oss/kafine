@@ -59,8 +59,8 @@ resume_offset(_Config) ->
         _ConnectionOptions = #{},
         GroupId,
         #{
-                subscription_callback => {do_nothing_callback, []},
-                assignment_callback => {do_nothing_assignment_callback, []}
+            subscription_callback => {do_nothing_subscription_callback, []},
+            assignment_callback => {do_nothing_assignment_callback, []}
         },
         [TopicName]
     ),
@@ -91,7 +91,7 @@ resume_offset(_Config) ->
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],

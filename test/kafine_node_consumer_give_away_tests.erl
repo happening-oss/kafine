@@ -3,8 +3,9 @@
 -include_lib("kafcod/include/error_code.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -59,7 +60,7 @@ not_leader_or_follower() ->
             61 => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % The node consumer should notify its owner (us) that it lost the partition.
     receive
@@ -101,7 +102,7 @@ not_leader_or_follower_2() ->
             62 => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % The node consumer should notify its owner (us) that it lost partition zero.
     receive
@@ -134,5 +135,5 @@ init_topic_partition_states(InitStates) ->
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).

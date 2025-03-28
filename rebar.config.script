@@ -1,4 +1,7 @@
-Vsn = string:trim(os:cmd("scripts/git-vsn")),
+ProjectRootDir = filename:dirname(SCRIPT),
+VsnScript = filename:join(ProjectRootDir, "scripts/git-vsn"),
+Vsn0 = os:cmd("cd \"" ++ ProjectRootDir ++ "\" && " ++ "\"" ++ VsnScript ++ "\""),
+Vsn = string:trim(Vsn0),
 {erl_opts, Opts0} = lists:keyfind(erl_opts, 1, CONFIG),
 Opts = lists:keystore(vsn, 1, Opts0, {vsn, Vsn}),
 lists:keyreplace(erl_opts, 1, CONFIG, {erl_opts, Opts}).

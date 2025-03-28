@@ -54,7 +54,8 @@ verify_callbacks_exported(Behaviour, Module, RequiredCallbacks, Exports) ->
 get_callbacks(Behaviour) -> delete_type_(apply(Behaviour, behaviour_info, [callbacks])).
 
 -spec get_optional_callbacks(Behaviour :: module()) -> [{function_name(), arity()}].
-get_optional_callbacks(Behaviour) -> delete_type_(apply(Behaviour, behaviour_info, [optional_callbacks])).
+get_optional_callbacks(Behaviour) ->
+    delete_type_(apply(Behaviour, behaviour_info, [optional_callbacks])).
 
 % Workaround: eqwalizer thinks that apply() returns `term()` and refuses to accept that it might return anything else.
 delete_type_(Value) ->

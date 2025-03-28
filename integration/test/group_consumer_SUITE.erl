@@ -52,7 +52,7 @@ single_member(_Config) ->
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],
@@ -86,24 +86,24 @@ two_members(_Config) ->
 
     GroupId = ?make_group_name(),
 
-    {ok, C1} = kafine:start_group_consumer(
+    {ok, _Sup1} = kafine:start_group_consumer(
         ?CONSUMER_REF_1,
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],
         #{}
     ),
 
-    {ok, C2} = kafine:start_group_consumer(
+    {ok, _Sup2} = kafine:start_group_consumer(
         ?CONSUMER_REF_2,
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],
@@ -119,7 +119,8 @@ two_members(_Config) ->
 
     % The assigned partitions must be unique to each member. No duplicates.
     eventually:assert(
-        node_consumer_topic_assignments(TopicName, [C1, C2]), no_duplicate_partitions()
+        node_consumer_topic_assignments(TopicName, [?CONSUMER_REF_1, ?CONSUMER_REF_2]),
+        no_duplicate_partitions()
     ),
 
     % Produce a message.
@@ -147,12 +148,12 @@ join_later(_Config) ->
 
     GroupId = ?make_group_name(),
 
-    {ok, C1} = kafine:start_group_consumer(
+    {ok, _Sup1} = kafine:start_group_consumer(
         ?CONSUMER_REF_1,
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],
@@ -165,12 +166,12 @@ join_later(_Config) ->
     end,
 
     % Add another member.
-    {ok, C2} = kafine:start_group_consumer(
+    {ok, _Sup2} = kafine:start_group_consumer(
         ?CONSUMER_REF_2,
         Bootstrap,
         #{},
         GroupId,
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
         {topic_consumer_callback, self()},
         [TopicName],
@@ -186,7 +187,8 @@ join_later(_Config) ->
 
     % The assigned partitions must be unique to each member. No duplicates.
     eventually:assert(
-        node_consumer_topic_assignments(TopicName, [C1, C2]), no_duplicate_partitions()
+        node_consumer_topic_assignments(TopicName, [?CONSUMER_REF_1, ?CONSUMER_REF_2]),
+        no_duplicate_partitions()
     ),
 
     % XXX: One recently-fixed bug is that we don't correctly stop the node consumers when revoking partitions. To check
@@ -269,10 +271,12 @@ node_consumer_topic_assignments(TopicName, Consumers) ->
                 #{node_consumers := NodeConsumers} = kafine_consumer:info(C),
                 NodePartitionAssignments = maps:fold(
                     fun(_Node, NodeConsumer, Acc1) ->
-                        #{state := _, topic_partitions := #{TopicName := Partitions}} = kafine_node_consumer:info(
-                            NodeConsumer
-                        ),
-                        [maps:keys(Partitions) | Acc1]
+                        case kafine_node_consumer:info(NodeConsumer) of
+                            #{state := _, topic_partitions := #{TopicName := Partitions}} ->
+                                [maps:keys(Partitions) | Acc1];
+                            _ ->
+                                Acc1
+                        end
                     end,
                     [],
                     NodeConsumers

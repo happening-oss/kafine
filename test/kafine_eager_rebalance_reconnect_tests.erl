@@ -2,7 +2,7 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(REBALANCE_REF, rebalance).

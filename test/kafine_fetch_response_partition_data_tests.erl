@@ -7,7 +7,7 @@
     split_fetch_response/1
 ]).
 
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [

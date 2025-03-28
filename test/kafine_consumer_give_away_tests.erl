@@ -2,16 +2,16 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -include_lib("kafcod/include/error_code.hrl").
--include_lib("kafcod/include/timestamp.hrl").
 
 -define(CLUSTER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
     meck:new(kamock_fetch, [passthrough]),
+    meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_partition_data, [passthrough]),
     meck:new(kamock_metadata_response_partition, [passthrough]),
 
@@ -31,7 +31,7 @@ kafine_consumer_give_away_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun not_leader_or_follower/0,
         fun partitions_move_repeatedly/0,
-        fun offset_reset_policy/0
+        fun offset_reset_policy_is_preserved/0
     ]}.
 
 not_leader_or_follower() ->
@@ -202,7 +202,10 @@ partitions_move_repeatedly() ->
     kamock_cluster:stop(Cluster),
     ok.
 
-offset_reset_policy() ->
+offset_reset_policy_is_preserved() ->
+    % Test that the topic options (in this case, offset reset policy) are correctly applied after a partition moves from
+    % one node consumer to another.
+    %
     % Because kafine_consumer holds onto the topic options, we need to make sure they're correctly preserved if a
     % partition moves.
     %
@@ -224,13 +227,9 @@ offset_reset_policy() ->
         #{}
     ),
 
-    meck:new(test_offset_reset_policy, [non_strict]),
-    meck:expect(test_offset_reset_policy, timestamp, fun() -> ?LATEST_TIMESTAMP end),
-    meck:expect(test_offset_reset_policy, adjust_offset, fun(_, _) -> 0 end),
-
     TopicName = ?TOPIC_NAME,
     Subscription = #{
-        TopicName => {#{offset_reset_policy => test_offset_reset_policy}, #{0 => 0}}
+        TopicName => {#{offset_reset_policy => latest}, #{0 => 0}}
     },
 
     % Start with the partition on a particular node.
@@ -261,8 +260,8 @@ offset_reset_policy() ->
         end
     ),
 
-    % And we should see a call to our offset reset policy.
-    meck:wait(test_offset_reset_policy, adjust_offset, '_', ?WAIT_TIMEOUT_MS),
+    % We should see a ListOffsets request.
+    meck:wait(kamock_list_offsets, handle_list_offsets_request, '_', ?WAIT_TIMEOUT_MS),
 
     kafine_consumer:stop(Consumer),
     kamock_cluster:stop(Cluster),

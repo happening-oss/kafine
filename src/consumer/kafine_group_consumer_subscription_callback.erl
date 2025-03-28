@@ -16,14 +16,14 @@
     offset_callback :: module()
 }).
 
-init([Consumer, GroupId, TopicOptions, OffsetCallback]) ->
+init([Consumer, GroupId, Topics, TopicOptions, OffsetCallback]) ->
     ok = kafine_behaviour:verify_callbacks_exported(
         kafine_adjust_fetched_offset_callback, OffsetCallback
     ),
     {ok, #state{
         consumer = Consumer,
         group_id = GroupId,
-        topic_options = TopicOptions,
+        topic_options = kafine_topic_options:validate_options(Topics, TopicOptions),
         offset_callback = OffsetCallback
     }}.
 
@@ -70,17 +70,28 @@ offset_fetch(Connection, GroupId, Topics) when
 make_subscription(TopicPartitionOffsets, TopicOptions, OffsetCallback) ->
     lists:foldl(
         fun(#{name := TopicName, partitions := PartitionOffsets}, Acc) ->
+            Options = maps:get(TopicName, TopicOptions, #{}),
+            #{initial_offset := InitialOffset} = Options,
             PartitionIndexOffset = lists:foldl(
-                fun(
-                    #{partition_index := PartitionIndex, committed_offset := CommittedOffset}, Acc1
-                ) ->
-                    AdjustedCommitOffset = OffsetCallback:adjust_committed_offset(CommittedOffset),
-                    Acc1#{PartitionIndex => AdjustedCommitOffset}
+                fun
+                    (
+                        #{partition_index := PartitionIndex, committed_offset := CommittedOffset},
+                        Acc1
+                    ) when CommittedOffset >= 0 ->
+                        AdjustedCommitOffset = OffsetCallback:adjust_committed_offset(
+                            CommittedOffset
+                        ),
+                        Acc1#{PartitionIndex => AdjustedCommitOffset};
+                    (
+                        #{partition_index := PartitionIndex, committed_offset := -1},
+                        Acc1
+                    ) ->
+                        Acc1#{PartitionIndex => InitialOffset}
                 end,
                 #{},
                 PartitionOffsets
             ),
-            Acc#{TopicName => {maps:get(TopicName, TopicOptions, #{}), PartitionIndexOffset}}
+            Acc#{TopicName => {Options, PartitionIndexOffset}}
         end,
         #{},
         TopicPartitionOffsets

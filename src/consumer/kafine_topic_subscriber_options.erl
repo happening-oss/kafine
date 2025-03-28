@@ -6,14 +6,17 @@
 validate_options(Options) ->
     kafine_options:validate_options(
         Options,
-        #{},
-        [
-            subscription_callback,
-            assignment_callback
-        ],
+        default_options(),
+        required_options(),
         true,
         fun validate_option/2
     ).
+
+default_options() ->
+    #{}.
+
+required_options() ->
+    [subscription_callback, assignment_callback].
 
 validate_option(subscription_callback, {Module, _Args}) ->
     ok = kafine_behaviour:verify_callbacks_exported(kafine_subscription_callback, Module);

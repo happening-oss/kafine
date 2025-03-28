@@ -9,7 +9,7 @@
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(CALLBACK_STATE, undefined).
--define(REBALANCE_REF, rebalance).
+-define(REBALANCE_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GENERATION_ID_1, 1).
 -define(GENERATION_ID_2, 2).
 

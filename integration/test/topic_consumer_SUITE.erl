@@ -78,7 +78,7 @@ latest_offset(_Config) ->
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_callback, self()},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}}
     ),
     % Give us some time to allow the consumer to start before producing another message
     receive
@@ -150,7 +150,7 @@ nonzero_offset(_Config) ->
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_callback, self()},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => earliest}}
+        #{TopicName => #{initial_offset => earliest, offset_reset_policy => earliest}}
     ),
 
     eventually:assert(

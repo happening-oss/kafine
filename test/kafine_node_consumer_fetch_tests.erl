@@ -8,10 +8,11 @@
 -elvis([{elvis_style, dont_repeat_yourself, disable}]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION, 61).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -55,7 +56,7 @@ single_message_fetch() ->
             ?PARTITION => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % We should see two record batches, one with a single message, one empty:
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
@@ -89,7 +90,7 @@ separate_produces_fetch_zero_offset() ->
             ?PARTITION => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 3 messages, one empty. Note that the response actually has 3 record
     % batches in it and that we've flattened them into one. That's more of a naming thing, and maybe we want to revisit
@@ -129,7 +130,7 @@ separate_produces_fetch_positive_offset() ->
             ?PARTITION => #{offset => InitialOffset}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our expected messages, one empty. Note that the response actually has 3 record
     % batches in it and that we've flattened them into one. That's more of a naming thing, and maybe we want to revisit
@@ -165,7 +166,7 @@ combined_produce_fetch_zero_offset() ->
             ?PARTITION => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 3 messages, one empty. Note that in this case, the messages really
     % are in a single batch (unlike above).
@@ -206,7 +207,7 @@ combined_produce_fetch_positive_offset() ->
             }
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % We should see two record batches, one with our 2 messages, one empty.
     meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
@@ -234,8 +235,8 @@ init_topic_partition_states(InitStates) ->
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
 
 % TODO: Single produce, multiple messages, tail offset.
 

@@ -5,8 +5,8 @@
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(CALLBACK_STATE, undefined).
--define(REBALANCE_REF_1, rebalance_1).
--define(REBALANCE_REF_2, rebalance_2).
+-define(REBALANCE_REF_1, {?MODULE, ?FUNCTION_NAME, 1}).
+-define(REBALANCE_REF_2, {?MODULE, ?FUNCTION_NAME, 2}).
 -define(HEARTBEAT_INTERVAL_MS, 30).
 -define(GROUP_GENERATION_1, 1).
 -define(GROUP_GENERATION_2, 2).

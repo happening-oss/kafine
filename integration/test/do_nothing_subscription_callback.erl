@@ -1,4 +1,4 @@
--module(do_nothing_callback).
+-module(do_nothing_subscription_callback).
 -behaviour(kafine_subscription_callback).
 -export([
     init/1,

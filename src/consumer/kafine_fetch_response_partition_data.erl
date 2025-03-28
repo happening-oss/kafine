@@ -18,7 +18,14 @@ fold(
     FetchOffset,
     Callback,
     StateData1
-) ->
+) when
+    is_binary(Topic),
+    is_integer(PartitionIndex),
+    is_integer(LogStartOffset),
+    is_integer(LastStableOffset),
+    is_integer(HighWatermark),
+    is_integer(FetchOffset)
+->
     Info = #{
         % If old log segments are deleted, the log won't start at zero.
         log_start_offset => LogStartOffset,

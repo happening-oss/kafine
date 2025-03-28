@@ -4,11 +4,12 @@
 -include("history_matchers.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -52,9 +53,9 @@ start_paused_resume_later() ->
     }),
 
     % Pretend that there are some messages.
-    mock_produce(0, 4),
+    kafine_kamock:produce(0, 4),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
     ?assertMatch({idle, _}, sys:get_state(Pid)),
 
     ok = kafine_node_consumer:resume(Pid, TopicName, ?PARTITION_1),
@@ -96,9 +97,9 @@ resume_from_offset() ->
     }),
 
     % Pretend that there are some messages.
-    mock_produce(0, 4),
+    kafine_kamock:produce(0, 4),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
     ?assertMatch({idle, _}, sys:get_state(Pid)),
 
     ok = kafine_node_consumer:resume(Pid, TopicName, ?PARTITION_1, 2),
@@ -140,7 +141,7 @@ resume_unknown_topic_partition() ->
         }
     }),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
     ?assertMatch({idle, _}, sys:get_state(Pid)),
 
     ?assertMatch(
@@ -159,43 +160,5 @@ init_topic_partition_states(InitStates) ->
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
-
-% TODO: DRY
-mock_produce(FirstOffset, LastOffset) ->
-    meck:expect(
-        kamock_list_offsets_partition_response,
-        make_list_offsets_partition_response,
-        kamock_list_offsets_partition_response:range(FirstOffset, LastOffset)
-    ),
-
-    % If we send an empty fetch, that's a bad thing; we should have gone idle.
-    % Note that there's a race here, so this won't always trigger. That's fine; it's double-checking.
-    meck:expect(
-        kamock_fetch,
-        handle_fetch_request,
-        fun(FetchRequest = #{topics := Topics}, Env) ->
-            ?assertNotEqual([], Topics),
-            meck:passthrough([FetchRequest, Env])
-        end
-    ),
-
-    meck:expect(
-        kamock_fetchable_topic,
-        make_fetchable_topic_response,
-        fun(FetchableTopic = #{topic := _Topic, partitions := FetchPartitions}, Env) ->
-            ?assertNotEqual([], FetchPartitions),
-            meck:passthrough([FetchableTopic, Env])
-        end
-    ),
-
-    meck:expect(
-        kamock_partition_data,
-        make_partition_data,
-        kamock_partition_data:range(FirstOffset, LastOffset, fun(_T, _P, O) ->
-            Key = iolist_to_binary(io_lib:format("key~B", [O])),
-            #{key => Key}
-        end)
-    ),
-    ok.
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).

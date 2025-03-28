@@ -6,7 +6,7 @@
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(HEARTBEAT_INTERVAL_MS, 30).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
@@ -87,6 +87,7 @@ offset_commit_from_consumer_callback() ->
     ),
 
     GroupId = ?GROUP_ID,
+    Topics = [TopicName],
     TopicOptions = #{},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         Ref,
@@ -97,7 +98,7 @@ offset_commit_from_consumer_callback() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback =>
                 {kafine_group_consumer_subscription_callback, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
+                    Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
                 ]},
             assignment_callback => {test_assignment_callback, undefined}
         },

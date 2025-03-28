@@ -2,11 +2,12 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
 -define(PARTITION_3, 63).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -39,7 +40,7 @@ cleanup(_) ->
 
 subscribe() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(Broker),
+    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -76,7 +77,7 @@ subscribe() ->
 
 subscribe_more() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(Broker),
+    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -133,7 +134,7 @@ subscribe_more() ->
 
 unsubscribe() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(Broker),
+    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -202,7 +203,7 @@ unsubscribe() ->
 
 unsubscribe_all() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(Broker),
+    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -248,7 +249,7 @@ unsubscribe_unknown() ->
     % just to be annoying, we'll mix this up by subscribing to two partitions, then unsubscribing from one of those,
     % plus one unknown.
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(Broker),
+    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),

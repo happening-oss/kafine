@@ -40,7 +40,7 @@ virgin_topic(_Config) ->
         Bootstrap,
         #{},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
         [TopicName],
         #{TopicName => #{}}
@@ -48,19 +48,25 @@ virgin_topic(_Config) ->
 
     % TODO: This (and the next one) should assert parity on all partitions at some point.
     eventually:assert(
-        eventually:probe(fun() ->
-            topic_consumer_history:get_history(History, TopicName, PartitionIndex)
-        end, {history, TopicName, PartitionIndex}),
-        eventually:match(fun
-            (
-                [
-                    {_, {parity, _}}
-                ]
-            ) ->
-                true;
-            (_) ->
-                false
-        end, parity_only)
+        eventually:probe(
+            fun() ->
+                topic_consumer_history:get_history(History, TopicName, PartitionIndex)
+            end,
+            {history, TopicName, PartitionIndex}
+        ),
+        eventually:match(
+            fun
+                (
+                    [
+                        {_, {parity, _}}
+                    ]
+                ) ->
+                    true;
+                (_) ->
+                    false
+            end,
+            parity_only
+        )
     ),
 
     kafine:stop_topic_consumer(?CONSUMER_REF),
@@ -92,26 +98,32 @@ emptied_topic(_Config) ->
         Bootstrap,
         #{},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
         [TopicName],
         #{TopicName => #{}}
     ),
 
     eventually:assert(
-        eventually:probe(fun() ->
-            topic_consumer_history:get_history(History, TopicName, PartitionIndex)
-        end, {history, TopicName, PartitionIndex}),
-        eventually:match(fun
-            (
-                [
-                    {_, {parity, _}}
-                ]
-            ) ->
-                true;
-            (_) ->
-                false
-        end, parity_only)
+        eventually:probe(
+            fun() ->
+                topic_consumer_history:get_history(History, TopicName, PartitionIndex)
+            end,
+            {history, TopicName, PartitionIndex}
+        ),
+        eventually:match(
+            fun
+                (
+                    [
+                        {_, {parity, _}}
+                    ]
+                ) ->
+                    true;
+                (_) ->
+                    false
+            end,
+            parity_only
+        )
     ),
 
     kafine:stop_topic_consumer(?CONSUMER_REF),
@@ -135,16 +147,19 @@ earliest_with_messages(_Config) ->
         Bootstrap,
         #{},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
         [TopicName],
         #{TopicName => #{}}
     ),
 
     eventually:assert(
-        eventually:probe(fun() ->
-            topic_consumer_history:get_history(History, TopicName, PartitionIndex)
-        end, {history, TopicName, PartitionIndex}),
+        eventually:probe(
+            fun() ->
+                topic_consumer_history:get_history(History, TopicName, PartitionIndex)
+            end,
+            {history, TopicName, PartitionIndex}
+        ),
         eventually:match(fun
             (
                 [
@@ -163,22 +178,28 @@ earliest_with_messages(_Config) ->
     % Then produce another message. We should see the message and then parity.
     Key2 = produce_message(Bootstrap, TopicName, PartitionIndex),
     eventually:assert(
-        eventually:probe(fun() ->
-            topic_consumer_history:get_history(History, TopicName, PartitionIndex)
-        end, {history, TopicName, PartitionIndex}),
+        eventually:probe(
+            fun() ->
+                topic_consumer_history:get_history(History, TopicName, PartitionIndex)
+            end,
+            {history, TopicName, PartitionIndex}
+        ),
         % TODO: These are kinda hard to read, and they're hard to isolate, because of the pattern matching.
         % TODO: Consider a macro, or maybe even a matchspec? Oooh. QLC?
-        eventually:match(fun
-            (
-                [
-                    {_, {record, #{key := K}}},
-                    {_, {parity, _}}
-                ]
-            ) when K == Key2 ->
-                true;
-            (_) ->
-                false
-        end, message_then_parity)
+        eventually:match(
+            fun
+                (
+                    [
+                        {_, {record, #{key := K}}},
+                        {_, {parity, _}}
+                    ]
+                ) when K == Key2 ->
+                    true;
+                (_) ->
+                    false
+            end,
+            message_then_parity
+        )
     ),
 
     kafine:stop_topic_consumer(?CONSUMER_REF),
@@ -202,23 +223,29 @@ latest_with_messages(_Config) ->
         Bootstrap,
         #{},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}}
     ),
 
     % We should NOT see the message before we see parity.
     eventually:assert(
-        eventually:probe(fun() ->
-            topic_consumer_history:get_history(History, TopicName, PartitionIndex)
-        end, {history, TopicName, PartitionIndex}),
-        eventually:match(fun
-            ([{{_, _}, {parity, _}}]) ->
-                true;
-            (_) ->
-                false
-        end, just_parity)
+        eventually:probe(
+            fun() ->
+                topic_consumer_history:get_history(History, TopicName, PartitionIndex)
+            end,
+            {history, TopicName, PartitionIndex}
+        ),
+        eventually:match(
+            fun
+                ([{{_, _}, {parity, _}}]) ->
+                    true;
+                (_) ->
+                    false
+            end,
+            just_parity
+        )
     ),
 
     ok = topic_consumer_history:reset_history(History),
@@ -229,17 +256,20 @@ latest_with_messages(_Config) ->
         eventually:probe(fun() ->
             topic_consumer_history:get_history(History, TopicName, PartitionIndex)
         end),
-        eventually:match(fun
-            (
-                [
-                    {{_, _}, {record, _}},
-                    {{_, _}, {parity, _}}
-                ]
-            ) ->
-                true;
-            (_) ->
-                false
-        end, message_then_parity)
+        eventually:match(
+            fun
+                (
+                    [
+                        {{_, _}, {record, _}},
+                        {{_, _}, {parity, _}}
+                    ]
+                ) ->
+                    true;
+                (_) ->
+                    false
+            end,
+            message_then_parity
+        )
     ),
 
     kafine:stop_topic_consumer(?CONSUMER_REF),

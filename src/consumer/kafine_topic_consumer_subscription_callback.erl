@@ -11,7 +11,7 @@
 
 -record(state, {
     consumer :: kafine_consumer:ref(),
-    topic_options :: kafine:topic_options()
+    topic_options :: #{kafine:topic() => kafine:topic_options()}
 }).
 
 init([Consumer, TopicOptions]) ->
@@ -31,12 +31,12 @@ unsubscribe_partitions(State = #state{consumer = Consumer}) ->
 
 make_subscription(AssignedPartitions, AllTopicOptions) ->
     Fun = fun(TopicName, Partitions) ->
-        InitialOffset = -1,
+        TopicOptions = maps:get(TopicName, AllTopicOptions),
+        #{initial_offset := InitialOffset} = TopicOptions,
         MakeOffset = fun(Partition, OffsetAcc) ->
             OffsetAcc#{Partition => InitialOffset}
         end,
         Offsets = lists:foldl(MakeOffset, #{}, Partitions),
-        TopicOptions = maps:get(TopicName, AllTopicOptions, #{}),
         {TopicOptions, Offsets}
     end,
     Sub = maps:map(Fun, AssignedPartitions),

@@ -2,15 +2,18 @@
 -include_lib("eunit/include/eunit.hrl").
 % Used by other tests.
 -export([
-    start_node_consumer/1,
-    start_node_consumer/2
+    start_node_consumer/2,
+    start_node_consumer/3
 ]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(CONNECTION_OPTIONS, #{}).
+-define(PARTITION_1, 61).
+-define(PARTITION_2, 62).
 
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
@@ -38,18 +41,19 @@ kafine_node_consumer_test_() ->
         fun offset_out_of_range/0
     ]}.
 
-start_node_consumer(Broker) ->
+start_node_consumer(Ref, Broker = #{host := _, port := _}) ->
     % validate_options is a helper function; we only call it because we're testing kafine_node_consumer directly.
     ConsumerOptions = kafine_consumer_options:validate_options(#{}),
     kafine_node_consumer:start_link(
+        Ref,
         Broker,
         ?CONNECTION_OPTIONS,
         ConsumerOptions,
         self()
     ).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    {ok, Pid} = start_node_consumer(Broker),
+start_node_consumer(Ref, Broker = #{host := _, port := _}, TopicPartitionStates) ->
+    {ok, Pid} = start_node_consumer(Ref, Broker),
     TopicNames = maps:keys(TopicPartitionStates),
     TopicOptions =
         #{TopicName => kafine_topic_options:validate_options(#{}) || TopicName <- TopicNames},
@@ -62,11 +66,11 @@ empty_topic() ->
     TopicName = ?TOPIC_NAME,
     TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #{},
-            62 => #{}
+            ?PARTITION_1 => #{},
+            ?PARTITION_2 => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait for two calls to end_record_batch (2 partitions => 2 calls).
     meck:wait(
@@ -88,10 +92,10 @@ empty_topic_repeated_fetch() ->
     TopicName = ?TOPIC_NAME,
     TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            61 => #{}
+            ?PARTITION_1 => #{}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait for two calls to end_record_batch, since we should repeat.
     meck:wait(
@@ -109,17 +113,20 @@ empty_topic_repeated_fetch() ->
 
 offset_out_of_range() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
+    % The mock broker defaults to empty partitions, so any non-zero offset is out of range.
 
     TopicName = ?TOPIC_NAME,
     TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            % Note the -1 offset.
-            61 => #{offset => -1}
+            % Offset is way too large.
+            ?PARTITION_1 => #{offset => 123}
         }
     }),
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
-    % The node consumer should issue ListOffsets, then Fetch, so we should see end_record_batch.
+    % The node consumer should issue a Fetch (getting an error), then it should call ListOffsets, then another Fetch
+    % with the new offset, so we should see end_record_batch.
+
     meck:wait(kamock_list_offsets, handle_list_offsets_request, '_', ?WAIT_TIMEOUT_MS),
     meck:wait(kamock_fetch, handle_fetch_request, '_', ?WAIT_TIMEOUT_MS),
 

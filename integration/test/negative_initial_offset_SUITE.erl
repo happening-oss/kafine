@@ -1,13 +1,13 @@
--module(last_offset_reset_policy_SUITE).
+-module(negative_initial_offset_SUITE).
 -compile([export_all, nowarn_export_all]).
 
 -include_lib("kafcod/include/timestamp.hrl").
 
 all() ->
     [
-        last_callback_against_new_topic,
-        last_callback_against_topic_with_one_message,
-        last_callback_against_empty_non_zero_offset_topic
+        against_new_topic,
+        against_topic_with_one_message,
+        against_empty_non_zero_offset_topic
     ].
 
 suite() ->
@@ -28,7 +28,7 @@ parse_broker(Broker) when is_list(Broker) ->
     [Host, Port] = string:split(Broker, ":"),
     #{host => list_to_binary(Host), port => list_to_integer(Port)}.
 
-last_callback_against_new_topic(_Config) ->
+against_new_topic(_Config) ->
     BootstrapServer = ct:get_config(bootstrap_server),
     Bootstrap = parse_broker(BootstrapServer),
 
@@ -41,10 +41,10 @@ last_callback_against_new_topic(_Config) ->
         Bootstrap,
         #{client_id => ?CLIENT_ID},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_callback, self()},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => kafine_last_offset_reset_policy}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
     ),
 
     % Produce a message.
@@ -55,7 +55,7 @@ last_callback_against_new_topic(_Config) ->
     kafine:stop_topic_consumer(?CONSUMER_REF),
     ok.
 
-last_callback_against_topic_with_one_message(_Config) ->
+against_topic_with_one_message(_Config) ->
     BootstrapServer = ct:get_config(bootstrap_server),
     Bootstrap = parse_broker(BootstrapServer),
 
@@ -71,10 +71,10 @@ last_callback_against_topic_with_one_message(_Config) ->
         Bootstrap,
         #{client_id => ?CLIENT_ID},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_callback, self()},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => kafine_last_offset_reset_policy}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
     ),
 
     eventually:assert(records_received(), contains_only_record(Key1)),
@@ -82,7 +82,7 @@ last_callback_against_topic_with_one_message(_Config) ->
     kafine:stop_topic_consumer(?CONSUMER_REF),
     ok.
 
-last_callback_against_empty_non_zero_offset_topic(_Config) ->
+against_empty_non_zero_offset_topic(_Config) ->
     BootstrapServer = ct:get_config(bootstrap_server),
     Bootstrap = parse_broker(BootstrapServer),
 
@@ -129,28 +129,38 @@ last_callback_against_empty_non_zero_offset_topic(_Config) ->
         )
     ),
 
-    % If we start a topic consumer now, we should start from the correct first offset.
+    % If we start a topic consumer now, we should get an error, because when we subtract one, we fall on an invalid
+    % offset, so we should restart from latest. Then when the message is produced, we continue with it.
     ExpectedCount = (InitialCount - DeleteCount),
     {ok, _} = kafine:start_topic_consumer(
         ?CONSUMER_REF,
         Bootstrap,
         #{client_id => ?CLIENT_ID},
         #{},
-        #{ assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         {topic_consumer_callback, self()},
         [TopicName],
-        #{TopicName => #{offset_reset_policy => kafine_last_offset_reset_policy}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
     ),
 
-    % Produce a message
+    % We should get OFFSET_OUT_OF_RANGE, then restart from latest. We should get no messages, but we should get an empty
+    % batch.
+
+    % Wait until we've fetched at least once.
+    eventually:assert(messages_received(), has_end_record_batch()),
+
+    % _Then_ when a message is produced, we should get that message.
     _ = produce_message(Bootstrap, TopicName, PartitionIndex),
 
     eventually:assert(
         records_received(),
         % The lowest offset should be the expected first offset, and we should see at least the expected number of
         % records.
-        eventually:match(fun(Records = [{_Topic, _Partition, #{offset := Offset}} | _]) ->
-            Offset == ExpectedFirstOffset andalso length(Records) >= ExpectedCount
+        eventually:match(fun
+            (Records = [{_Topic, _Partition, #{offset := Offset}} | _]) ->
+                Offset == ExpectedFirstOffset andalso length(Records) >= ExpectedCount;
+            (_) ->
+                false
         end)
     ),
 
@@ -205,4 +215,37 @@ contains_only_record(Expected) ->
                 false
         end,
         {contains_only_record, Expected}
+    ).
+
+messages_received() ->
+    eventually:probe(
+        fun Receive(Acc) ->
+            receive
+                M ->
+                    Receive([M | Acc])
+            after 0 ->
+                lists:reverse(Acc)
+            end
+        end,
+        [],
+        messages_received
+    ).
+
+has_end_record_batch() ->
+    eventually:match(
+        fun(Messages) ->
+            case
+                lists:search(
+                    fun
+                        ({end_record_batch, _}) -> true;
+                        (_) -> false
+                    end,
+                    Messages
+                )
+            of
+                {value, _} -> true;
+                false -> false
+            end
+        end,
+        has_end_record_batch
     ).

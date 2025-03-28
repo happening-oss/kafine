@@ -26,6 +26,6 @@ whereis_name(Name) ->
     gproc:whereis_name(?GPROC_NAME(Name)).
 
 % Note that the return value is the message. For comparison, global:send/2 returns the pid.
--spec send(Name :: term(), Message) -> Message when Message :: term().
+-spec send(Name, Message) -> Message when Name :: term(), Message :: term().
 send(Name, Message) ->
     gproc:send(?GPROC_NAME(Name), Message).

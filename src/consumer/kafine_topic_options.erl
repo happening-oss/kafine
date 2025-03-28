@@ -6,13 +6,15 @@
     merge_options/2
 ]).
 
--define(DEFAULT_OFFSET_RESET_POLICY, earliest).
+-define(DEFAULT_INITIAL_OFFSET, earliest).
+-define(DEFAULT_OFFSET_RESET_POLICY, latest).
 
 validate_options(Topics, TopicOptions) ->
     % for each listed topic, make sure it appears in the TopicOptions.
+    [] = maps:keys(TopicOptions) -- Topics,
     % for each topic in TopicOptions, make sure the options exist, with defaults.
     lists:foldl(
-        fun(TopicName, Acc) ->
+        fun(TopicName, Acc) when is_binary(TopicName) ->
             Options0 = maps:get(TopicName, TopicOptions, #{}),
             Options = validate_options(Options0),
             Acc#{TopicName => Options}
@@ -24,18 +26,27 @@ validate_options(Topics, TopicOptions) ->
 validate_options(Options) ->
     kafine_options:validate_options(
         Options,
-        #{
-            offset_reset_policy => ?DEFAULT_OFFSET_RESET_POLICY
-        },
-        [offset_reset_policy],
+        default_options(),
+        required_options(),
         true,
         fun validate_option/2
     ).
 
+default_options() ->
+    #{
+        initial_offset => ?DEFAULT_INITIAL_OFFSET,
+        offset_reset_policy => ?DEFAULT_OFFSET_RESET_POLICY
+    }.
+
+required_options() ->
+    [initial_offset, offset_reset_policy].
+
+validate_option(initial_offset, Value) when Value == earliest; Value == latest ->
+    ok;
+validate_option(initial_offset, Value) when is_integer(Value) ->
+    ok;
 validate_option(offset_reset_policy, Value) when Value == earliest; Value == latest ->
     ok;
-validate_option(offset_reset_policy, Value) when is_atom(Value) ->
-    ok = kafine_behaviour:verify_callbacks_exported(kafine_offset_reset_policy, Value);
 validate_option(Key, Value) ->
     error(badarg, [Key, Value]).
 

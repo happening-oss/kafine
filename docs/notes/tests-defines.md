@@ -10,7 +10,7 @@ At the top of many of the unit tests, you'll find a collection of `-define` dire
 -define(PARTITION_2, 62).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(CONNECTION_OPTIONS, #{}).
 ```
@@ -21,7 +21,7 @@ The following are less obvious:
 
 ```erlang
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 ```
 
 These are for when the test fails. When the test fails with an error report, it often contains the state of the involved

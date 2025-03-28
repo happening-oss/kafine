@@ -8,7 +8,8 @@
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun fold/0,
-        fun unsubscribed/0
+        fun unsubscribed/0,
+        fun fold_negative/0
     ]}.
 
 setup() ->
@@ -20,8 +21,6 @@ cleanup(_) ->
     ok.
 
 fold() ->
-    meck:expect(test_offset_reset_policy, adjust_offset, fun(_Last, Next) -> Next - 1 end),
-
     TopicPartitionStates = #{
         <<"cats">> => #{
             61 => #topic_partition_state{offset = 34},
@@ -35,11 +34,6 @@ fold() ->
             61 => #topic_partition_state{offset = 68},
             62 => #topic_partition_state{offset = 78}
         }
-    },
-    TopicOptions = #{
-        <<"cats">> => #{offset_reset_policy => earliest},
-        <<"dogs">> => #{offset_reset_policy => latest},
-        <<"fish">> => #{offset_reset_policy => test_offset_reset_policy}
     },
 
     % Note: the offsets here correspond to the offset reset policy. That is: we asked for the earliest, we get the
@@ -73,16 +67,19 @@ fold() ->
     ?assertMatch(
         #{
             <<"cats">> := #{
-                61 := #topic_partition_state{offset = 44}, 62 := #topic_partition_state{offset = 75}
+                61 := #topic_partition_state{offset = 44},
+                62 := #topic_partition_state{offset = 75}
             },
             <<"dogs">> := #{
-                61 := #topic_partition_state{offset = 52}, 62 := #topic_partition_state{offset = 54}
+                61 := #topic_partition_state{offset = 52},
+                62 := #topic_partition_state{offset = 54}
             },
             <<"fish">> := #{
-                61 := #topic_partition_state{offset = 67}, 62 := #topic_partition_state{offset = 89}
+                61 := #topic_partition_state{offset = 68},
+                62 := #topic_partition_state{offset = 90}
             }
         },
-        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates, TopicOptions)
+        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
     ),
     ok.
 
@@ -91,9 +88,6 @@ unsubscribed() ->
         <<"cats">> => #{
             61 => #topic_partition_state{offset = 34}
         }
-    },
-    TopicOptions = #{
-        <<"cats">> => #{offset_reset_policy => earliest}
     },
 
     ListOffsetsResponse = #{
@@ -113,6 +107,54 @@ unsubscribed() ->
                 61 := #topic_partition_state{offset = 44}
             }
         },
-        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates, TopicOptions)
+        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
+    ),
+    ok.
+
+fold_negative() ->
+    TopicPartitionStates = #{
+        <<"cats">> => #{
+            61 => #topic_partition_state{offset = -5},
+            62 => #topic_partition_state{offset = -5}
+        },
+        <<"dogs">> => #{
+            61 => #topic_partition_state{offset = -10},
+            62 => #topic_partition_state{offset = -10}
+        }
+    },
+
+    % Note: the offsets here correspond to the offset reset policy. That is: we asked for the earliest, we get the
+    % earliest offset, and so on.
+    ListOffsetsResponse = #{
+        topics => [
+            #{
+                name => <<"cats">>,
+                partitions => [
+                    #{partition_index => 61, error_code => ?NONE, offset => 10},
+                    #{partition_index => 62, error_code => ?NONE, offset => 5}
+                ]
+            },
+            #{
+                name => <<"dogs">>,
+                partitions => [
+                    #{partition_index => 61, error_code => ?NONE, offset => 2},
+                    #{partition_index => 62, error_code => ?NONE, offset => 4}
+                ]
+            }
+        ]
+    },
+
+    ?assertMatch(
+        #{
+            <<"cats">> := #{
+                61 := #topic_partition_state{offset = 5},
+                62 := #topic_partition_state{offset = 0}
+            },
+            <<"dogs">> := #{
+                61 := #topic_partition_state{offset = 0},
+                62 := #topic_partition_state{offset = 0}
+            }
+        },
+        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
     ),
     ok.

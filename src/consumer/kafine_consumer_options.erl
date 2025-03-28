@@ -14,17 +14,23 @@
 validate_options(Options) ->
     kafine_options:validate_options(
         Options,
-        #{
-            max_wait_ms => ?MAX_WAIT_TIME_MS,
-            min_bytes => ?MIN_BYTES,
-            max_bytes => ?MAX_BYTES,
-            partition_max_bytes => ?PARTITION_MAX_BYTES,
-            isolation_level => ?DEFAULT_ISOLATION_LEVEL
-        },
-        [max_wait_ms, min_bytes, max_bytes, partition_max_bytes, isolation_level],
+        default_options(),
+        required_options(),
         true,
         fun validate_option/2
     ).
+
+default_options() ->
+    #{
+        max_wait_ms => ?MAX_WAIT_TIME_MS,
+        min_bytes => ?MIN_BYTES,
+        max_bytes => ?MAX_BYTES,
+        partition_max_bytes => ?PARTITION_MAX_BYTES,
+        isolation_level => ?DEFAULT_ISOLATION_LEVEL
+    }.
+
+required_options() ->
+    [max_wait_ms, min_bytes, max_bytes, partition_max_bytes, isolation_level].
 
 validate_option(max_wait_ms, Value) when is_integer(Value), Value >= 0 ->
     ok;

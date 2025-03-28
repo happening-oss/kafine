@@ -2,10 +2,11 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -54,7 +55,7 @@ start_paused() ->
         [kafine, node_consumer, continue]
     ]),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     receive
         {[kafine, node_consumer, idle], TelemetryRef, _, _} -> ok
@@ -81,7 +82,7 @@ pause() ->
     }),
 
     % Pretend that there are some messages.
-    mock_produce(0, 14),
+    kafine_kamock:produce(0, 14),
 
     % Pause one of the partitions when it gets to a particular offset.
     meck:expect(test_consumer_callback, handle_record, fun
@@ -89,7 +90,7 @@ pause() ->
         (_T, _P, _M, St) -> {ok, St}
     end),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait until we've caught up.
     meck:wait(
@@ -113,7 +114,7 @@ pause() ->
     meck:reset(kamock_partition_data),
 
     % Produce some more messages.
-    mock_produce(0, 18),
+    kafine_kamock:produce(0, 18),
 
     % First partition is paused; wait until second partition catches up.
     meck:wait(
@@ -147,7 +148,7 @@ pause_all() ->
     }),
 
     % Pretend that there are some messages.
-    mock_produce(0, 14),
+    kafine_kamock:produce(0, 14),
 
     % Pause both of the partitions when they get to a particular offset.
     meck:expect(test_consumer_callback, handle_record, fun
@@ -155,7 +156,7 @@ pause_all() ->
         (_T, _P, _M, St) -> {ok, St}
     end),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait until we've caught up.
     meck:wait(
@@ -186,7 +187,7 @@ pause_all() ->
     meck:reset(kamock_partition_data),
 
     % Produce some more messages.
-    mock_produce(0, 18),
+    kafine_kamock:produce(0, 18),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(Pid)),
@@ -202,46 +203,8 @@ init_topic_partition_states(InitStates) ->
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
-
-mock_produce(FirstOffset, LastOffset) ->
-    meck:expect(
-        kamock_list_offsets_partition_response,
-        make_list_offsets_partition_response,
-        kamock_list_offsets_partition_response:range(FirstOffset, LastOffset)
-    ),
-
-    % If we send an empty fetch, that's a bad thing; we should have gone idle.
-    % Note that there's a race here, so this won't always trigger.
-    meck:expect(
-        kamock_fetch,
-        handle_fetch_request,
-        fun(FetchRequest = #{topics := Topics}, Env) ->
-            ?assertNotEqual([], Topics),
-            meck:passthrough([FetchRequest, Env])
-        end
-    ),
-
-    meck:expect(
-        kamock_fetchable_topic,
-        make_fetchable_topic_response,
-        fun(FetchableTopic = #{topic := _Topic, partitions := FetchPartitions}, Env) ->
-            ?assertNotEqual([], FetchPartitions),
-            meck:passthrough([FetchableTopic, Env])
-        end
-    ),
-
-    MessageBuilder = fun(_T, _P, O) ->
-        Key = iolist_to_binary(io_lib:format("key~B", [O])),
-        #{key => Key}
-    end,
-    meck:expect(
-        kamock_partition_data,
-        make_partition_data,
-        kamock_partition_data:range(FirstOffset, LastOffset, MessageBuilder)
-    ),
-    ok.
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
 
 fetch_request_history() ->
     lists:filtermap(

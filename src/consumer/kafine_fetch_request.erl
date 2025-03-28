@@ -37,12 +37,6 @@ build_fetch_request(
         session_epoch => -1,
         forgotten_topics_data => [],
 
-        % TODO: This might be subject to starvation -- if the topics/partitions earlier in the list are busy, we might
-        % never see messages for the ones later in the list.
-
-        % TODO: Originally, I thought that shuffling the list would be fair, but I don't see how that's possible, given
-        % the data structure we're working with here -- we can shuffle the partitions within each topic, but we can't
-        % easily shuffle the topics.
         topics => build_fetch_topics(TopicPartitionStates, Options),
 
         % TODO: preferred read replica.
@@ -97,6 +91,7 @@ build_fetch_partition(
 ) when
     is_integer(PartitionIndex),
     is_integer(Offset),
+    Offset >= 0,
     is_integer(PartitionMaxBytes)
 ->
     #{

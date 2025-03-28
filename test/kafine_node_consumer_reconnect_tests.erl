@@ -2,7 +2,8 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
--define(CALLBACK_STATE, ?MODULE).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
@@ -35,6 +36,7 @@ initial_connect(Broker) ->
     ConnectionOptions = #{},
     ConsumerOptions = #{},
     {ok, NodeConsumer} = kafine_node_consumer:start_link(
+        ?CONSUMER_REF,
         Broker,
         ConnectionOptions,
         ConsumerOptions,
@@ -60,6 +62,7 @@ should_reconnect_if_connection_drops(Broker) ->
     ConnectionOptions = #{},
     ConsumerOptions = #{},
     {ok, NodeConsumer} = kafine_node_consumer:start_link(
+        ?CONSUMER_REF,
         Broker,
         ConnectionOptions,
         ConsumerOptions,

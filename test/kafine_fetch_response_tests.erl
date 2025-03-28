@@ -17,7 +17,7 @@
 -define(TELEMETRY_EVENT_METADATA, #{node_id => 501}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [

@@ -3,9 +3,9 @@
     start_link/3,
     stop/1,
 
-    produce/5,
-    produce_async/7,
-    produce_batch/3,
+    produce/6,
+    produce_async/8,
+    produce_batch/4,
 
     reqids_new/0
 ]).
@@ -22,6 +22,7 @@
 ]).
 
 -include_lib("kafcod/include/api_key.hrl").
+-include_lib("kafcod/include/error_code.hrl").
 
 -type ref() :: any().
 
@@ -53,16 +54,23 @@ via(Ref) ->
 stop(Producer) when is_pid(Producer) ->
     gen_statem:stop(Producer).
 
-produce(Pid, Topic, PartitionIndex, BatchAttributes, Messages) ->
-    call(Pid, {produce, Topic, PartitionIndex, BatchAttributes, Messages}).
+produce(Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages) ->
+    Req = make_request(Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages),
+    call(Pid, Req).
 
-produce_async(Pid, Topic, PartitionIndex, BatchAttributes, Messages, Label, ReqIdCollection) ->
+produce_async(
+    Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages, Label, ReqIdCollection
+) ->
+    Req = make_request(Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages),
     send_request(
-        Pid, {produce, Topic, PartitionIndex, BatchAttributes, Messages}, Label, ReqIdCollection
+        Pid,
+        Req,
+        Label,
+        ReqIdCollection
     ).
 
-produce_batch(Pid, Batch, BatchAttributes) ->
-    kafine_producer_batch:produce_batch(Pid, Batch, BatchAttributes).
+produce_batch(Pid, ProduceOptions, Batch, BatchAttributes) ->
+    kafine_producer_batch:produce_batch(Pid, ProduceOptions, Batch, BatchAttributes).
 
 call(Producer, Request) when is_pid(Producer) ->
     gen_statem:call(Producer, Request);
@@ -86,6 +94,19 @@ callback_mode() ->
     partition_leaders :: #{kafine:topic() := #{kafine:partition() := kafine:node_id()}},
     node_producers :: #{kafine:node_id() := pid()},
     pending :: kafine_node_producer:request_id_collection()
+}).
+
+-record(request, {
+    topic :: kafine:topic(),
+    partition :: kafine:partition(),
+    batch_attributes :: map(),
+    produce_options :: map(),
+    messages :: [map()],
+    remaining_retries :: pos_integer(),
+    retry_count :: pos_integer(),
+    initial_backoff_ms :: pos_integer(),
+    multiplier :: pos_integer(),
+    jitter :: float()
 }).
 
 init([Bootstrap, ConnectionOptions]) ->
@@ -120,24 +141,26 @@ handle_event(
     {keep_state, StateData2};
 handle_event(
     {call, From},
-    Req = {produce, Topic, PartitionIndex, BatchAttributes, Messages},
+    Req,
     _State,
     StateData
-) ->
+) when is_record(Req, request) ->
     case
         do_produce(
-            Topic, PartitionIndex, BatchAttributes, Messages, From, StateData
+            Req, From, StateData
         )
     of
         {ok, StateData2} ->
             {keep_state, StateData2, []};
         {error, missing_topic_metadata} ->
-            StateData2 = add_topic(Topic, StateData),
+            StateData2 = add_topic(Req#request.topic, StateData),
             {keep_state, StateData2, [
                 {next_event, internal, refresh_metadata}, {next_event, {call, From}, Req}
             ]};
         {error, invalid_partition_index} ->
-            exit({produce_error, {invalid_partition_index, Topic, PartitionIndex}})
+            exit(
+                {produce_error, {invalid_partition_index, Req#request.topic, Req#request.partition}}
+            )
     end;
 handle_event(info, Info, State, StateData = #state{pending = ReqIds}) ->
     % We can't tell the difference between send_request responses and normal info messages, so we have to check them
@@ -149,6 +172,12 @@ check_response(_Result = {Response, Label, ReqIds2}, _Info, State, StateData) ->
 check_response(_Other, Info, State, StateData) ->
     handle_info(Info, State, StateData).
 
+handle_info(
+    {timeout, _, {produce, From, OriginalRequest}},
+    _State,
+    _StateData
+) ->
+    {keep_state_and_data, [{next_event, {call, From}, OriginalRequest}]};
 handle_info(
     {'EXIT', Connection, _Reason},
     _State,
@@ -166,11 +195,42 @@ handle_info(
 
 handle_response(
     ProduceResponse,
-    {produce, From},
+    {produce, From, #request{remaining_retries = 0}},
     _State,
     StateData
 ) ->
-    {next_state, todo, StateData, [{reply, From, ProduceResponse}]}.
+    {keep_state, StateData, [{reply, From, ProduceResponse}]};
+handle_response(
+    ProduceResponse = {ok, #{error_code := ErrorCode}},
+    {produce, From, Req},
+    _State,
+    StateData
+) ->
+    IsRetirable = is_retryable_error(ErrorCode),
+    case ErrorCode of
+        ?NOT_LEADER_OR_FOLLOWER ->
+            % this should eventually make progress so not going to update retry count
+            {keep_state, StateData, [
+                {next_event, internal, refresh_metadata}, {next_event, {call, From}, Req}
+            ]};
+        _ErrorCode when IsRetirable ->
+             BackoffDuration = calculate_backoff(Req),
+            Req1 = Req#request{
+                remaining_retries = Req#request.remaining_retries - 1,
+                retry_count = Req#request.retry_count + 1
+            },
+            _ = erlang:start_timer(BackoffDuration, self(), {produce, From, Req1}),
+            {keep_state, StateData, []};
+        _Else ->
+            {keep_state, StateData, [{reply, From, ProduceResponse}]}
+    end;
+handle_response(
+    ProduceResponse,
+    {produce, From, _OriginalRequest, _RetriesLeft},
+    _State,
+    StateData
+) ->
+    {keep_state, StateData, [{reply, From, ProduceResponse}]}.
 
 add_topic(Topic, StateData = #state{partition_leaders = PartitionLeaders}) ->
     case maps:get(Topic, PartitionLeaders, undefined) of
@@ -181,39 +241,43 @@ add_topic(Topic, StateData = #state{partition_leaders = PartitionLeaders}) ->
     end.
 
 do_produce(
-    Topic,
-    PartitionIndex,
-    BatchAttributes,
-    Messages,
+    Req,
     From,
     StateData = #state{partition_leaders = PartitionLeaders}
 ) ->
-    case maps:get(Topic, PartitionLeaders, undefined) of
+    case maps:get(Req#request.topic, PartitionLeaders, undefined) of
         undefined ->
             {error, missing_topic_metadata};
         LeaderByPartition ->
-            case maps:get(PartitionIndex, LeaderByPartition, undefined) of
+            case maps:get(Req#request.partition, LeaderByPartition, undefined) of
                 undefined ->
                     {error, invalid_partition_index};
                 LeaderId ->
                     do_produce_to_leader(
-                        Topic, PartitionIndex, BatchAttributes, Messages, From, LeaderId, StateData
+                        Req,
+                        From,
+                        LeaderId,
+                        StateData
                     )
             end
     end.
 
 do_produce_to_leader(
-    Topic,
-    PartitionIndex,
-    BatchAttributes,
-    Messages,
+    Req,
     From,
     LeaderId,
     StateData = #state{pending = Pending}
 ) ->
     {NodeProducer, StateData2} = get_or_start_node_producer(LeaderId, StateData),
     Pending2 = kafine_node_producer:produce(
-        NodeProducer, Topic, PartitionIndex, BatchAttributes, Messages, {produce, From}, Pending
+        NodeProducer,
+        Req#request.topic,
+        Req#request.partition,
+        Req#request.produce_options,
+        Req#request.batch_attributes,
+        Req#request.messages,
+        {produce, From, Req},
+        Pending
     ),
     {ok, StateData2#state{pending = Pending2}}.
 
@@ -256,8 +320,12 @@ do_refresh_metadata(
     ),
 
     #{brokers := Brokers, topics := TopicsMetadata} = MetadataResponse,
-    PartitionLeaders2 = kafine_metadata:group_by_leader(
-        fun(LeaderId, Topic, PartitionIndex, Acc) ->
+    PartitionLeaders2 = kafine_metadata:fold(
+        fun(
+            Topic,
+            #{partition_index := PartitionIndex, error_code := ?NONE, leader_id := LeaderId},
+            Acc
+        ) ->
             case maps:get(Topic, Acc, undefined) of
                 undefined ->
                     Acc#{Topic => #{PartitionIndex => LeaderId}};
@@ -289,3 +357,41 @@ terminate(
 get_node_by_id(Nodes, NodeId) when is_list(Nodes), is_integer(NodeId) ->
     [Node] = [N || N = #{node_id := Id} <- Nodes, Id =:= NodeId],
     Node.
+
+is_retryable_error(ErrorCode) when
+    ErrorCode =:= ?LEADER_NOT_AVAILABLE;
+    ErrorCode =:= ?NOT_LEADER_OR_FOLLOWER;
+    ErrorCode =:= ?REQUEST_TIMED_OUT;
+    ErrorCode =:= ?NOT_ENOUGH_REPLICAS;
+    ErrorCode =:= ?NOT_ENOUGH_REPLICAS_AFTER_APPEND;
+    ErrorCode =:= ?KAFKA_STORAGE_ERROR;
+    ErrorCode =:= ?THROTTLING_QUOTA_EXCEEDED
+->
+    true;
+is_retryable_error(_Else) ->
+    false.
+
+make_request(Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages) ->
+    % a negative value is equivalent to forever
+    MaxRetries = maps:get(max_retries, ProduceOptions, 5),
+    InitialBackoff = maps:get(initial_backoff_ms, ProduceOptions, 500),
+    Multiplier = maps:get(multiplier, ProduceOptions, 500),
+    Jitter = maps:get(jitter, ProduceOptions, 0.2),
+    #request{
+        batch_attributes = BatchAttributes,
+        produce_options = ProduceOptions,
+        messages = Messages,
+        partition = PartitionIndex,
+        topic = Topic,
+        remaining_retries = MaxRetries,
+        retry_count = 0,
+        initial_backoff_ms = InitialBackoff,
+        multiplier = Multiplier,
+        jitter = Jitter
+    }.
+
+calculate_backoff(#request{
+    retry_count = RetryCount, initial_backoff_ms = Initial, jitter = Jitter, multiplier = Multiplier
+}) ->
+    X = Initial + Multiplier * RetryCount,
+    trunc((rand:uniform() * 2 - 1) * X * Jitter + X).

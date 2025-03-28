@@ -1,20 +1,24 @@
 -module(kafine_list_offsets_request).
 -moduledoc false.
--export([build_list_offsets_request/3]).
+-export([build_list_offsets_request/2]).
 
 -include_lib("kafcod/include/timestamp.hrl").
 -include_lib("kafcod/include/isolation_level.hrl").
 
+%% Build a ListOffsets request.
+%%
+%% Given a map of Topic => Partition => Timestamp, build the corresponding request object.
 -spec build_list_offsets_request(
-    TopicPartitions :: #{kafine:topic() := [kafine:partition()]},
-    TopicOptions :: #{kafine:topic() := kafine:topic_options()},
+    TopicPartitionTimestamps :: #{
+        kafine:topic() := #{kafine:partition() := kafine:offset_timestamp()}
+    },
     IsolationLevel :: kafine:isolation_level()
 ) -> list_offsets_request:list_offsets_request_5().
 
-build_list_offsets_request(TopicPartitions, TopicOptions, IsolationLevel0) ->
+build_list_offsets_request(TopicPartitionTimestamps, IsolationLevel0) ->
     IsolationLevel = isolation_level(IsolationLevel0),
     #{
-        topics => build_list_offsets_topics(TopicPartitions, TopicOptions),
+        topics => build_list_offsets_topics(TopicPartitionTimestamps),
         replica_id => -1,
         isolation_level => IsolationLevel
     }.
@@ -24,21 +28,19 @@ isolation_level(read_committed) ->
 isolation_level(read_uncommitted) ->
     ?READ_UNCOMMITTED.
 
-build_list_offsets_topics(TopicPartitions, TopicOptions) ->
+build_list_offsets_topics(TopicPartitions) ->
     maps:fold(
-        fun(TopicName, Partitions, Acc) ->
-            #{TopicName := #{offset_reset_policy := OffsetResetPolicy}} = TopicOptions,
-            Timestamp = timestamp_from_offset_reset_policy(OffsetResetPolicy),
+        fun(TopicName, PartitionTimestamps, Acc) ->
             [
                 #{
                     name => TopicName,
                     partitions => [
                         #{
                             partition_index => PartitionIndex,
-                            timestamp => Timestamp,
+                            timestamp => convert_timestamp(Timestamp),
                             current_leader_epoch => -1
                         }
-                     || PartitionIndex <- Partitions
+                     || PartitionIndex := Timestamp <- PartitionTimestamps
                     ]
                 }
                 | Acc
@@ -48,9 +50,10 @@ build_list_offsets_topics(TopicPartitions, TopicOptions) ->
         TopicPartitions
     ).
 
-timestamp_from_offset_reset_policy(earliest) ->
+convert_timestamp(earliest) ->
     ?EARLIEST_TIMESTAMP;
-timestamp_from_offset_reset_policy(latest) ->
+convert_timestamp(latest) ->
     ?LATEST_TIMESTAMP;
-timestamp_from_offset_reset_policy(OffsetResetPolicy) ->
-    OffsetResetPolicy:timestamp().
+convert_timestamp(Offset) when Offset < 0 ->
+    % It's a negative offset; we want to count backwards from the end.
+    ?LATEST_TIMESTAMP.

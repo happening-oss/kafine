@@ -1,7 +1,7 @@
 -module(kafine_node_consumer).
 -moduledoc false.
 -export([
-    start_link/4,
+    start_link/5,
     stop/1,
 
     info/1,
@@ -31,6 +31,7 @@
 
 -type start_ret() :: gen_statem:start_ret().
 -spec start_link(
+    Ref :: kafine_consumer:ref(),
     Broker :: kafine:broker(),
     ConnectionOptions :: kafine:connection_options(),
     ConsumerOptions :: kafine:consumer_options(),
@@ -39,6 +40,7 @@
     start_ret().
 
 start_link(
+    Ref,
     Broker = #{host := _, port := _, node_id := _},
     ConnectionOptions,
     ConsumerOptions,
@@ -47,6 +49,7 @@ start_link(
     gen_statem:start_link(
         ?MODULE,
         [
+            Ref,
             Broker,
             ConnectionOptions,
             ConsumerOptions,
@@ -94,6 +97,7 @@ callback_mode() ->
 
     topic_options :: #{kafine:topic() := kafine:topic_options()},
     topic_partition_states :: kafine_consumer:topic_partition_states(),
+    subscribe_epoch :: non_neg_integer(),
 
     owner :: pid(),
     next_actions,
@@ -101,15 +105,16 @@ callback_mode() ->
 }).
 
 init([
+    Ref,
     Broker = #{node_id := NodeId},
     ConnectionOptions,
     ConsumerOptions,
     Owner
 ]) ->
     process_flag(trap_exit, true),
-    Metadata = #{node_id => NodeId},
+    Metadata = #{ref => Ref, node_id => NodeId},
     logger:set_process_metadata(Metadata),
-    kafine_proc_lib:set_label({?MODULE, NodeId}),
+    kafine_proc_lib:set_label({?MODULE, {Ref, NodeId}}),
 
     StateData = #state{
         metadata = Metadata,
@@ -119,15 +124,14 @@ init([
 
         consumer_options = ConsumerOptions,
 
-        topic_partition_states = #{},
         topic_options = #{},
+        topic_partition_states = #{},
+        subscribe_epoch = 0,
 
         owner = Owner,
         next_actions = [],
         req_ids = kafine_connection:reqids_new()
     },
-    % TODO: Is there any way we can avoid doing a blind fetch with the -1 offsets? It saves a round-trip (and kcat does
-    % better).
     {ok, disconnected, StateData, [{next_event, internal, connect}]}.
 
 handle_event(
@@ -165,63 +169,73 @@ handle_event(
     State,
     StateData = #state{
         topic_partition_states = TopicPartitionStates0,
-        topic_options = TopicOptions0
+        topic_options = TopicOptions0,
+        subscribe_epoch = SubscribeEpoch,
+        next_actions = NextActions0,
+        metadata = Metadata
     }
 ) ->
     TopicPartitionStates2 = kafine_topic_partition_states:merge_topic_partition_states(
         TopicPartitionStates0, TopicPartitionStates1
     ),
     TopicOptions2 = kafine_topic_options:merge_options(TopicOptions0, TopicOptions1),
-
+    NextActions = add_next_actions(TopicPartitionStates2, NextActions0),
     StateData2 = StateData#state{
         topic_partition_states = TopicPartitionStates2,
-        topic_options = TopicOptions2
+        subscribe_epoch = SubscribeEpoch + 1,
+        topic_options = TopicOptions2,
+        next_actions = NextActions
     },
+    PartitionCount = kafine_topic_partition_states:count(TopicPartitionStates2),
+    telemetry:execute(
+        [kafine, node_consumer, subscribe], #{partition_count => PartitionCount}, Metadata
+    ),
     reply_and_continue(State, StateData2, {reply, From, ok});
 handle_event(
     {call, From},
     unsubscribe_all,
     State,
-    StateData
+    StateData = #state{
+        subscribe_epoch = SubscribeEpoch
+    }
 ) ->
-    StateData2 = StateData#state{topic_partition_states = #{}},
+    StateData2 = StateData#state{
+        topic_partition_states = #{}, subscribe_epoch = SubscribeEpoch + 1
+    },
     reply_and_continue(State, StateData2, {reply, From, ok});
 handle_event(
     {call, From},
     {unsubscribe, TopicPartitions},
     State,
     StateData = #state{
-        topic_partition_states = TopicPartitionStates0
+        topic_partition_states = TopicPartitionStates0,
+        subscribe_epoch = SubscribeEpoch
     }
 ) ->
-    TopicPartitionStates1 = maps:fold(
-        fun(Topic, Partitions, Acc) ->
-            lists:foldl(
-                fun(Partition, Acc2) ->
-                    % Returns the existing map if the key doesn't exist.
-                    kafine_maps:remove([Topic, Partition], Acc2)
-                end,
-                Acc,
-                Partitions
-            )
-        end,
-        TopicPartitionStates0,
-        TopicPartitions
+    TopicPartitionStates1 = kafine_topic_partition_states:remove(
+        TopicPartitions, TopicPartitionStates0
     ),
-    StateData2 = StateData#state{topic_partition_states = TopicPartitionStates1},
+    StateData2 = StateData#state{
+        topic_partition_states = TopicPartitionStates1, subscribe_epoch = SubscribeEpoch + 1
+    },
     reply_and_continue(State, StateData2, {reply, From, ok});
 handle_event(
     {call, From},
     {resume, {Topic, Partition, Offset}},
     State,
-    StateData = #state{topic_partition_states = TopicPartitionStates}
+    StateData = #state{
+        topic_partition_states = TopicPartitionStates,
+        next_actions = NextActions0
+    }
 ) ->
     case kafine_maps:get([Topic, Partition], TopicPartitionStates, undefined) of
         undefined ->
+            % Bad (Topic, Partition) key
             reply_and_continue(
                 State, StateData, {reply, From, {error, {badkey, [Topic, Partition]}}}
             );
         _ ->
+            % Found it; mark it as active.
             TopicPartitionStates2 = kafine_maps:update_with(
                 [Topic, Partition],
                 fun
@@ -232,8 +246,10 @@ handle_event(
                 end,
                 TopicPartitionStates
             ),
+            NextActions = add_next_actions(TopicPartitionStates2, NextActions0),
             StateData2 = StateData#state{
-                topic_partition_states = TopicPartitionStates2
+                topic_partition_states = TopicPartitionStates2,
+                next_actions = NextActions
             },
             reply_and_continue(State, StateData2, {reply, From, ok})
     end;
@@ -244,6 +260,7 @@ handle_event(
     StateData = #state{
         connection = Connection,
         topic_partition_states = TopicPartitionStates,
+        subscribe_epoch = SubscribeEpoch,
         consumer_options = ConsumerOptions,
         req_ids = ReqIds,
         metadata = Metadata
@@ -258,14 +275,45 @@ handle_event(
         fun fetch_request:encode_fetch_request_11/1,
         FetchRequest,
         fun fetch_response:decode_fetch_response_11/1,
-        fetch,
+        {fetch, SubscribeEpoch},
         ReqIds,
         kafine_request_telemetry:request_labels(?FETCH, 11)
     ),
     {next_state, fetch, StateData#state{req_ids = ReqIds2}};
 handle_event(
     internal,
-    {list_offsets, TopicPartitions0},
+    {list_offsets, TopicPartitionOffsets0},
+    _State = active,
+    StateData = #state{
+        connection = Connection,
+        consumer_options = #{isolation_level := IsolationLevel},
+        req_ids = ReqIds
+    }
+) ->
+    % Convert from {T, P, O} to T => P => O.
+    TopicPartitionOffsets = lists:foldl(
+        fun({Topic, Partition, Offset}, Acc) ->
+            kafine_maps:put([Topic, Partition], Offset, Acc)
+        end,
+        #{},
+        TopicPartitionOffsets0
+    ),
+    ListOffsetsRequest = kafine_list_offsets_request:build_list_offsets_request(
+        TopicPartitionOffsets, IsolationLevel
+    ),
+    ReqIds2 = kafine_connection:send_request(
+        Connection,
+        fun list_offsets_request:encode_list_offsets_request_5/1,
+        ListOffsetsRequest,
+        fun list_offsets_response:decode_list_offsets_response_5/1,
+        list_offsets,
+        ReqIds,
+        kafine_request_telemetry:request_labels(?LIST_OFFSETS, 5)
+    ),
+    {next_state, list_offsets, StateData#state{req_ids = ReqIds2}};
+handle_event(
+    internal,
+    {reset_offsets, TopicPartitions0},
     _State = active,
     StateData = #state{
         connection = Connection,
@@ -274,9 +322,9 @@ handle_event(
         req_ids = ReqIds
     }
 ) ->
-    TopicPartitions = collect_topic_partitions(TopicPartitions0),
+    TopicPartitionOffsets = collect_topic_partition_offsets(TopicPartitions0, TopicOptions),
     ListOffsetsRequest = kafine_list_offsets_request:build_list_offsets_request(
-        TopicPartitions, TopicOptions, IsolationLevel
+        TopicPartitionOffsets, IsolationLevel
     ),
     ReqIds2 = kafine_connection:send_request(
         Connection,
@@ -336,10 +384,12 @@ handle_info(_Info, _State, _StateData) ->
 
 handle_response(
     {ok, FetchResponse},
-    fetch,
+    {fetch, SubscribeEpoch},
     _State = fetch,
     StateData = #state{
         topic_partition_states = TopicPartitionStates,
+        subscribe_epoch = SubscribeEpoch,
+        next_actions = NextActions0,
         metadata = Metadata
     }
 ) ->
@@ -348,17 +398,25 @@ handle_response(
     ),
     StateData2 = StateData#state{
         topic_partition_states = TopicPartitionStates2,
-        next_actions = next_actions(Errors)
+        next_actions = NextActions0 ++ next_actions(Errors)
     },
     {next_state, active, StateData2, [{next_event, internal, continue}]};
+handle_response(
+    {ok, _FetchResponse},
+    {fetch, _StaleEpoch},
+    _State = fetch,
+    StateData
+) ->
+    % Subscription changed while Fetch was in flight; drop the response.
+    {next_state, active, StateData, [{next_event, internal, continue}]};
 handle_response(
     {ok, ListOffsetsResponse},
     list_offsets,
     _State = list_offsets,
-    StateData = #state{topic_partition_states = TopicPartitionStates, topic_options = TopicOptions}
+    StateData = #state{topic_partition_states = TopicPartitionStates}
 ) ->
     TopicPartitionStates2 = kafine_list_offsets_response:fold(
-        ListOffsetsResponse, TopicPartitionStates, TopicOptions
+        ListOffsetsResponse, TopicPartitionStates
     ),
     StateData2 = StateData#state{
         topic_partition_states = TopicPartitionStates2
@@ -412,27 +470,65 @@ handle_continue(
             {next_state, active, StateData, [{next_event, internal, fetch}]}
     end.
 
+add_next_actions(TopicPartitionStates, NextActions0) ->
+    case need_offsets(TopicPartitionStates) of
+        [] -> NextActions0;
+        NeedOffsets -> NextActions0 ++ [{list_offsets, NeedOffsets}]
+    end.
+
+%% Do we need to issue an initial ListOffsets request for any of the partitions we're handling?
+need_offsets(TopicPartitionStates) ->
+    maps:fold(
+        fun(Topic, PartitionStates, Acc1) ->
+            maps:fold(
+                fun
+                    (
+                        _PartitionIndex,
+                        _PartitionState = #topic_partition_state{state = paused},
+                        Acc2
+                    ) ->
+                        % Paused; do it later.
+                        Acc2;
+                    (
+                        _PartitionIndex,
+                        _PartitionState = #topic_partition_state{offset = Offset},
+                        Acc2
+                    ) when is_integer(Offset), Offset >= 0 ->
+                        % Offset is a positive integer; continue.
+                        Acc2;
+                    (
+                        PartitionIndex,
+                        _PartitionState = #topic_partition_state{offset = Offset},
+                        Acc2
+                    ) ->
+                        % Offset is something else (e.g. 'earliest'); we need to convert it to a real offset.
+                        [{Topic, PartitionIndex, Offset} | Acc2]
+                end,
+                Acc1,
+                PartitionStates
+            )
+        end,
+        [],
+        TopicPartitionStates
+    ).
+
 next_actions(Errors) ->
     lists:reverse(maps:fold(fun next_actions_for/3, [], Errors)).
 
 next_actions_for(?OFFSET_OUT_OF_RANGE, TopicPartitions, Acc) ->
-    [{list_offsets, TopicPartitions} | Acc];
+    [{reset_offsets, TopicPartitions} | Acc];
 next_actions_for(?NOT_LEADER_OR_FOLLOWER, TopicPartitions, Acc) ->
     [{give_away, TopicPartitions} | Acc].
 
-% Convert from [{T, P}] to #{T => [P...]}
-collect_topic_partitions(Errors) ->
+%% Convert from [{T, P}] to #{T => #{P => O}}
+collect_topic_partition_offsets(TopicPartitions, TopicOptions) ->
     lists:foldl(
-        fun({Topic, PartitionIndex}, Acc) ->
-            maps:update_with(
-                Topic,
-                fun(PartitionIndexes) -> [PartitionIndex | PartitionIndexes] end,
-                [PartitionIndex],
-                Acc
-            )
+        fun({T, P}, Acc) ->
+            #{offset_reset_policy := OffsetResetPolicy} = maps:get(T, TopicOptions),
+            kafine_maps:put([T, P], OffsetResetPolicy, Acc)
         end,
         #{},
-        Errors
+        TopicPartitions
     ).
 
 %% Build the object returned in the 'info' call.

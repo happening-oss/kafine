@@ -9,14 +9,17 @@
 validate_options(Options) ->
     kafine_options:validate_options(
         Options,
-        #{
-            client_id => ?DEFAULT_CLIENT_ID,
-            metadata => ?DEFAULT_METADATA
-        },
+        default_options(),
         [],
         false,
         fun validate_option/2
     ).
+
+default_options() ->
+    #{
+        client_id => ?DEFAULT_CLIENT_ID,
+        metadata => ?DEFAULT_METADATA
+    }.
 
 validate_option(client_id, Value) when is_binary(Value) ->
     ok;

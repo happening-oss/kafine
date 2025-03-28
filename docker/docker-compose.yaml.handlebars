@@ -81,7 +81,7 @@ services:
   {{#if monitoring_enabled}}
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:v3.1.0
+    image: prom/prometheus:v3.2.0
     ports:
       - "9090:9090"
     volumes:

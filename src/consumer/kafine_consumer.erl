@@ -28,8 +28,10 @@
     subscription/0
 ]).
 
+-include_lib("kernel/include/logger.hrl").
 -include("kafine_topic_partition_state.hrl").
 -include_lib("kafcod/include/api_key.hrl").
+-include_lib("kafcod/include/error_code.hrl").
 
 -type ref() :: any().
 
@@ -118,9 +120,11 @@ call(Consumer, Request) ->
 ) -> ok.
 
 init_ack(Consumer, Topic, Partition, State) when is_pid(Consumer) ->
-    erlang:send(Consumer, {init_ack, {Topic, Partition}, State});
+    erlang:send(Consumer, {init_ack, {Topic, Partition}, State}),
+    ok;
 init_ack(Consumer, Topic, Partition, State) ->
-    kafine_via:send({?MODULE, Consumer}, {init_ack, {Topic, Partition}, State}).
+    kafine_via:send({?MODULE, Consumer}, {init_ack, {Topic, Partition}, State}),
+    ok.
 
 callback_mode() ->
     [handle_event_function].
@@ -224,6 +228,7 @@ handle_event(
         end,
         NodeConsumers
     ),
+    % Note that unsubscribing might leave an existing node consumer connected to the broker, but with no subscriptions.
     {keep_state, StateData, [{reply, From, ok}]};
 handle_event(
     {call, From},
@@ -284,6 +289,7 @@ do_subscribe(
     TopicOptions,
     TopicPartitionStates0,
     StateData = #state{
+        ref = Ref,
         connection = Connection,
         connection_options = ConnectionOptions,
         consumer_options = ConsumerOptions,
@@ -292,6 +298,7 @@ do_subscribe(
 ) ->
     % Get the metadata for the specified topics.
     Topics = maps:keys(TopicPartitionStates0),
+    ?LOG_DEBUG("Subscribing to ~p", [Topics]),
 
     MetadataRequest = #{
         allow_auto_topic_creation => false,
@@ -308,8 +315,12 @@ do_subscribe(
     ),
 
     #{brokers := Brokers, topics := TopicsMetadata} = MetadataResponse,
-    ByLeader = kafine_metadata:group_by_leader(
-        fun(LeaderId, Topic, PartitionIndex, Acc) ->
+    ByLeader = kafine_metadata:fold(
+        fun(
+            Topic,
+            #{partition_index := PartitionIndex, error_code := ?NONE, leader_id := LeaderId},
+            Acc
+        ) ->
             case kafine_maps:get([Topic, PartitionIndex], TopicPartitionStates0, undefined) of
                 undefined ->
                     Acc;
@@ -338,6 +349,7 @@ do_subscribe(
                     % We don't have a node consumer; start one.
                     Leader = get_node_by_id(Brokers, LeaderId),
                     {ok, NodeConsumer} = kafine_node_consumer:start_link(
+                        Ref,
                         Leader,
                         ConnectionOptions,
                         ConsumerOptions,

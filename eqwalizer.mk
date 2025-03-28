@@ -1,6 +1,7 @@
 EQWALIZER_RELEASE_VSN := 2024-11-07
 EQWALIZER_OTP_VSN := 26.2
 
+ERLANG_MK_TMP = $(shell TERM=dumb QUIET=1 REBAR_PROFILE=eqwalizer rebar3 path --base)
 EQWALIZER_TMP := $(ERLANG_MK_TMP)/eqwalizer
 EQWALIZER_ELP := $(EQWALIZER_TMP)/elp
 
@@ -20,7 +21,7 @@ endif
 EQWALIZER_TAR_GZ := $(EQWALIZER_TMP)/elp-$(EQWALIZER_FLAVOUR)-otp-$(EQWALIZER_OTP_VSN).tar.gz
 
 eqwalize:: $(EQWALIZER_ELP)
-	$(EQWALIZER_ELP) eqwalize-all
+	REBAR_PROFILE=eqwalizer $(EQWALIZER_ELP) eqwalize-all
 
 $(EQWALIZER_TAR_GZ):
 	mkdir -p $(EQWALIZER_TMP)

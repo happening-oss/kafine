@@ -6,10 +6,10 @@
 -export([after_assignment/3]).
 
 init(_) ->
-  {ok, undefined}.
+    {ok, undefined}.
 
 before_assignment(_, _, St) ->
-  {ok, St}.
+    {ok, St}.
 
 after_assignment(_, _, St) ->
-  {ok, St}.
+    {ok, St}.

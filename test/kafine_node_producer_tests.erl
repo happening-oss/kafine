@@ -4,7 +4,7 @@
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(CONNECTION_OPTIONS, #{}).
 
@@ -26,12 +26,14 @@ simple_tests() ->
 
     {ok, Pid} = kafine_node_producer:start_link(Broker, ?CONNECTION_OPTIONS),
 
-    {ok, #{error_code := ?NONE}} = kafine_node_producer:produce(Pid, ?TOPIC_NAME, 0, #{}, [
-        #{
-            key => <<"key">>,
-            value => <<"value">>,
-            headers => []
-        }
-    ]),
+    {ok, #{error_code := ?NONE}} = kafine_node_producer:produce(
+        Pid, ?TOPIC_NAME, 0, #{acks => full_isr}, #{}, [
+            #{
+                key => <<"key">>,
+                value => <<"value">>,
+                headers => []
+            }
+        ]
+    ),
 
     ok.

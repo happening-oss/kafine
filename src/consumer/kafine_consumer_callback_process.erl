@@ -17,7 +17,9 @@
 }).
 
 start_link(Ref, Topic, PartitionIndex, Callback, CallbackArgs) ->
-    gen_server:start_link(?MODULE, [Ref, Topic, PartitionIndex, Callback, CallbackArgs], start_options()).
+    gen_server:start_link(
+        ?MODULE, [Ref, Topic, PartitionIndex, Callback, CallbackArgs], start_options()
+    ).
 
 start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
 
@@ -26,7 +28,7 @@ stop(Pid) ->
 
 partition_data(Pid, Topic, PartitionData, FetchOffset) ->
     gen_server:call(
-        Pid, {partition_data, {Topic, PartitionData, FetchOffset}}
+        Pid, {partition_data, {Topic, PartitionData, FetchOffset}}, 3600000
     ).
 
 init([Ref, Topic, PartitionIndex, Callback, CallbackArgs]) ->

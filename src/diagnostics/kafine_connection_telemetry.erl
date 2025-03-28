@@ -1,4 +1,5 @@
 -module(kafine_connection_telemetry).
+-moduledoc false.
 -export([
     span/3,
 

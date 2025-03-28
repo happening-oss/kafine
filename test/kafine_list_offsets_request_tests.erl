@@ -18,70 +18,70 @@ cleanup(_) ->
     ok.
 
 build_list_offsets_request() ->
-    meck:expect(test_offset_reset_policy, timestamp, fun() -> ?LATEST_TIMESTAMP end),
-
-    TopicPartitions = #{<<"cats">> => [61, 62], <<"dogs">> => [61, 62], <<"fish">> => [61, 62]},
-    TopicOptions = #{
-        <<"cats">> => #{offset_reset_policy => earliest},
-        <<"dogs">> => #{offset_reset_policy => latest},
-        <<"fish">> => #{offset_reset_policy => test_offset_reset_policy}
+    TopicPartitionTimestamps = #{
+        <<"cats">> => #{61 => earliest, 62 => earliest},
+        <<"dogs">> => #{51 => latest, 52 => latest},
+        <<"fish">> => #{41 => -5, 42 => -5}
     },
     IsolationLevel = read_committed,
+
+    % The topics are in reverse order. This is an implementation detail and might change.
+    Expected = #{
+        isolation_level => ?READ_COMMITTED,
+        replica_id => -1,
+        topics =>
+            [
+                #{
+                    name => <<"fish">>,
+                    partitions => [
+                        #{
+                            timestamp => ?LATEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 41
+                        },
+                        #{
+                            timestamp => ?LATEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 42
+                        }
+                    ]
+                },
+                #{
+                    name => <<"dogs">>,
+                    partitions => [
+                        #{
+                            timestamp => ?LATEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 51
+                        },
+                        #{
+                            timestamp => ?LATEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 52
+                        }
+                    ]
+                },
+                #{
+                    name => <<"cats">>,
+                    partitions => [
+                        #{
+                            timestamp => ?EARLIEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 61
+                        },
+                        #{
+                            timestamp => ?EARLIEST_TIMESTAMP,
+                            current_leader_epoch => -1,
+                            partition_index => 62
+                        }
+                    ]
+                }
+            ]
+    },
     ?assertEqual(
-        #{
-            isolation_level => ?READ_COMMITTED,
-            replica_id => -1,
-            topics =>
-                [
-                    #{
-                        name => <<"fish">>,
-                        partitions => [
-                            #{
-                                timestamp => ?LATEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 61
-                            },
-                            #{
-                                timestamp => ?LATEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 62
-                            }
-                        ]
-                    },
-                    #{
-                        name => <<"dogs">>,
-                        partitions => [
-                            #{
-                                timestamp => ?LATEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 61
-                            },
-                            #{
-                                timestamp => ?LATEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 62
-                            }
-                        ]
-                    },
-                    #{
-                        name => <<"cats">>,
-                        partitions => [
-                            #{
-                                timestamp => ?EARLIEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 61
-                            },
-                            #{
-                                timestamp => ?EARLIEST_TIMESTAMP,
-                                current_leader_epoch => -1,
-                                partition_index => 62
-                            }
-                        ]
-                    }
-                ]
-        },
+        Expected,
         kafine_list_offsets_request:build_list_offsets_request(
-            TopicPartitions, TopicOptions, IsolationLevel
+            TopicPartitionTimestamps, IsolationLevel
         )
     ),
     ok.

@@ -5,8 +5,8 @@
     stop/1,
 
     reqids_new/0,
-    produce/5,
-    produce/7,
+    produce/6,
+    produce/8,
     check_response/2
 ]).
 -behaviour(gen_statem).
@@ -22,6 +22,8 @@
 ]).
 
 -include_lib("kernel/include/logger.hrl").
+-include_lib("kafcod/include/api_key.hrl").
+-include_lib("kafcod/include/ack.hrl").
 
 -type request_id_collection() :: gen_statem:request_id_collection().
 -type start_ret() :: gen_statem:start_ret().
@@ -50,12 +52,17 @@ start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle
 stop(Pid) ->
     gen_statem:stop(Pid).
 
-produce(Pid, Topic, PartitionIndex, BatchAttributes, Messages) ->
-    call(Pid, {produce, Topic, PartitionIndex, BatchAttributes, Messages}).
+produce(Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages) ->
+    call(Pid, {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages}).
 
-produce(Pid, Topic, PartitionIndex, BatchAttributes, Messages, Label, ReqIdCollection) ->
+produce(
+    Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages, Label, ReqIdCollection
+) ->
     send_request(
-        Pid, {produce, Topic, PartitionIndex, BatchAttributes, Messages}, Label, ReqIdCollection
+        Pid,
+        {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages},
+        Label,
+        ReqIdCollection
     ).
 
 reqids_new() ->
@@ -133,11 +140,13 @@ handle_event(
     {next_state, ready, StateData2, []};
 handle_event(
     {call, From},
-    {produce, Topic, PartitionIndex, BatchAttributes, Messages},
+    {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages},
     _State,
     StateData
 ) ->
-    StateData2 = send_messages(Topic, PartitionIndex, BatchAttributes, Messages, From, StateData),
+    StateData2 = send_messages(
+        Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages, From, StateData
+    ),
     {keep_state, StateData2};
 handle_event(info, Info, State, StateData = #state{pending = ReqIds}) ->
     % We can't tell the difference between send_request responses and normal info messages, so we have to check them
@@ -183,14 +192,16 @@ handle_response(
 send_messages(
     Topic,
     PartitionIndex,
+    ProduceOptions,
     BatchAttributes,
     Messages,
     From,
     StateData = #state{connection = Connection, pending = Pending}
 ) ->
+    Acks = encode_acks(maps:get(acks, ProduceOptions, full_isr)),
     ProduceRequest = #{
         transactional_id => null,
-        acks => -1,
+        acks => Acks,
         timeout_ms => 5_000,
         topic_data => [
             #{
@@ -210,6 +221,11 @@ send_messages(
         ProduceRequest,
         fun produce_response:decode_produce_response_8/1,
         {produce, From},
-        Pending
+        Pending,
+        kafine_request_telemetry:request_labels(?PRODUCE, 8)
     ),
     StateData#state{pending = Pending2}.
+
+encode_acks(none) -> ?ACK_NONE;
+encode_acks(leader) -> ?ACK_LEADER;
+encode_acks(full_isr) -> ?ACK_FULL_ISR.

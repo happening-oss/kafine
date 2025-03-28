@@ -1,6 +1,7 @@
 PROJECT = kafine
 PROJECT_DESCRIPTION = Kafka Client Library
-PROJECT_VERSION = $(shell scripts/git-vsn)
+PROJECT_ROOT_DIR := $(dir $(realpath $(lastword $(MAKEFILE_LIST))))
+PROJECT_VERSION = $(shell $(PROJECT_ROOT_DIR)scripts/git-vsn)
 
 # compile is the first target; if we used 'all', then erlang.mk (with this as a dependency) runs _that_ target.
 compile:
@@ -22,10 +23,9 @@ eqwalize:: compile
 ex_doc:
 	rebar3 ex_doc
 
-ERLANG_MK_TMP = $(shell TERM=dumb QUIET=1 rebar3 path --base)
 include eqwalizer.mk
 
-all: compile dialyzer eqwalize eunit ex_doc
+all: compile eunit dialyzer eqwalize ex_doc
 
 GNU_TAR ?= gtar
 ARCHIVE := ../kafine-$(PROJECT_VERSION).tar

@@ -15,12 +15,9 @@ init(_Topic, _Partition, _Args = Parent) when is_pid(Parent) ->
     {ok, #state{parent = Parent}}.
 
 begin_record_batch(
-    _Topic,
-    _Partition,
-    _CurrentOffset,
-    _Info,
-    State
+    Topic, Partition, CurrentOffset, Info, State = #state{parent = Parent}
 ) ->
+    Parent ! {begin_record_batch, {Topic, Partition, CurrentOffset, Info}},
     {ok, State}.
 
 handle_record(
@@ -30,10 +27,7 @@ handle_record(
     {ok, State}.
 
 end_record_batch(
-    _Topic,
-    _Partition,
-    _NextOffset,
-    _Info,
-    State
+    Topic, Partition, NextOffset, Info, State = #state{parent = Parent}
 ) ->
+    Parent ! {end_record_batch, {Topic, Partition, NextOffset, Info}},
     {ok, State}.

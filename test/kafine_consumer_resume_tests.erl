@@ -9,7 +9,7 @@
 -define(PARTITION_1, 1).
 -define(PARTITION_2, 2).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -38,7 +38,7 @@ start_paused_resume_later() ->
     {ok, Cluster, [Bootstrap | _]} = kamock_cluster:start(?CLUSTER_REF),
 
     % Pretend that there are some messages.
-    mock_produce(0, 4),
+    kafine_kamock:produce(0, 4),
 
     % Start paused.
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {pause, ?CALLBACK_STATE} end),
@@ -98,7 +98,7 @@ resume_after_move() ->
         end
     ),
 
-    mock_produce(0, 10),
+    kafine_kamock:produce(0, 10),
 
     % Pause at some point.
     meck:expect(test_consumer_callback, handle_record, fun
@@ -162,42 +162,4 @@ resume_after_move() ->
 
     kafine_consumer:stop(Consumer),
     kamock_cluster:stop(Cluster),
-    ok.
-
-% TODO: DRY
-mock_produce(FirstOffset, LastOffset) ->
-    meck:expect(
-        kamock_list_offsets_partition_response,
-        make_list_offsets_partition_response,
-        kamock_list_offsets_partition_response:range(FirstOffset, LastOffset)
-    ),
-
-    % If we send an empty fetch, that's a bad thing; we should have gone idle.
-    % Note that there's a race here, so this won't always trigger.
-    meck:expect(
-        kamock_fetch,
-        handle_fetch_request,
-        fun(FetchRequest = #{topics := Topics}, Env) ->
-            ?assertNotEqual([], Topics),
-            meck:passthrough([FetchRequest, Env])
-        end
-    ),
-
-    meck:expect(
-        kamock_fetchable_topic,
-        make_fetchable_topic_response,
-        fun(FetchableTopic = #{topic := _Topic, partitions := FetchPartitions}, Env) ->
-            ?assertNotEqual([], FetchPartitions),
-            meck:passthrough([FetchableTopic, Env])
-        end
-    ),
-
-    meck:expect(
-        kamock_partition_data,
-        make_partition_data,
-        kamock_partition_data:range(FirstOffset, LastOffset, fun(_T, _P, O) ->
-            Key = iolist_to_binary(io_lib:format("key~B", [O])),
-            #{key => Key}
-        end)
-    ),
     ok.

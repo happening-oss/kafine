@@ -66,9 +66,12 @@ create_topic(Broker, TopicName, NumPartitions, ReplicationFactor) ->
                 fun create_topics_response:decode_create_topics_response_2/1
             ),
 
+            kafine_connection:stop(Co),
+
             eventually:assert(kafka_topic_assert:topic_present_on_all_brokers(TopicName, Brokers)),
             ok
-    end.
+    end,
+    kafine_connection:stop(C).
 
 delete_topic(Broker, TopicName) when is_binary(TopicName) ->
     {ok, C} = kafine_connection:start_link(Broker, #{client_id => ?CLIENT_ID}),
@@ -105,6 +108,8 @@ delete_topic(Broker, TopicName) when is_binary(TopicName) ->
         },
         fun delete_topics_response:decode_delete_topics_response_4/1
     ),
+    kafine_connection:stop(Co),
+    kafine_connection:stop(C),
     ok.
 
 get_leader(Broker, TopicName, PartitionIndex) when is_map(Broker) ->
@@ -186,6 +191,7 @@ produce_message(Broker, TopicName, PartitionIndex, Message) ->
         },
         fun produce_response:decode_produce_response_8/1
     ),
+    kafine_connection:stop(C),
     ok.
 
 delete_records(Broker, TopicName, PartitionIndex, DeleteFrom, DeleteTo) ->
@@ -221,6 +227,7 @@ delete_records(Broker, TopicName, PartitionIndex, DeleteFrom, DeleteTo) ->
         },
         fun delete_records_response:decode_delete_records_response_1/1
     ),
+    kafine_connection:stop(L),
     ok.
 
 get_node_by_id(Nodes, NodeId) when is_list(Nodes), is_integer(NodeId) ->

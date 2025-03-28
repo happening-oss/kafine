@@ -7,15 +7,32 @@ docker exec "$BOOTSTRAP_CONTAINER" \
     /bin/kafka-topics --bootstrap-server localhost:9092 \
     --create --topic cars --partitions 10 --replication-factor 3
 
+# Create some topics that are good placeholders for examples
+docker exec "$BOOTSTRAP_CONTAINER" \
+    /bin/kafka-topics --bootstrap-server localhost:9092 \
+    --create --topic cats --partitions 10 --replication-factor 3
+docker exec "$BOOTSTRAP_CONTAINER" \
+    /bin/kafka-topics --bootstrap-server localhost:9092 \
+    --create --topic dogs --partitions 10 --replication-factor 3
+docker exec "$BOOTSTRAP_CONTAINER" \
+    /bin/kafka-topics --bootstrap-server localhost:9092 \
+    --create --topic birds --partitions 10 --replication-factor 3
+
 # Create a topic with 1 replica, minimal partitions. Might be handy for some things.
 docker exec "$BOOTSTRAP_CONTAINER" \
     /bin/kafka-topics --bootstrap-server localhost:9092 \
     --create --topic highlander --partitions 1 --replication-factor 1
 
 # Create a topic that rotates segments every minute and deletes expired segments every 5 minutes. Messages don't live
-# long (hence "mayfly"). It's intended to demonstrate that log_start_offset can be non-zero. It's also useful for
-# testing offset-reset-policy (or kcat's negative offsets) -- when the offset is large enough, but there are no messages
-# before that point, for example.
+# long (hence "mayfly").
+#
+# It's intended to demonstrate that log_start_offset can be non-zero. It's also useful for testing offset-reset-policy
+# (or kcat's negative offsets) -- when the offset is large enough, but there are no messages before that point, for
+# example.
+#
+# Some ways you can use it:
+# - After it's been created, produce a few messages to it and then wait for 5 minutes. The messages will be deleted. If
+#   you produce some more messages, they'll have a non-zero offset.
 docker exec "$BOOTSTRAP_CONTAINER" \
     /bin/kafka-topics --bootstrap-server localhost:9092 \
     --create --topic mayfly --partitions 10 --replication-factor 3 \

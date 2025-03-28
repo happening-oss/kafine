@@ -2,10 +2,11 @@
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
+-define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -60,7 +61,7 @@ end_record_batch_pause() ->
         (_T, _P, _M, _I, St) -> {ok, St}
     end),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait until we've caught up.
     meck:wait(
@@ -136,7 +137,7 @@ end_record_batch_pause_all() ->
     % Pause all of the partitions.
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _M, _I, St) -> {pause, St} end),
 
-    {ok, Pid} = start_node_consumer(Broker, TopicPartitionStates),
+    {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
     % Wait until we've caught up.
     meck:wait(
@@ -180,8 +181,8 @@ init_topic_partition_states(InitStates) ->
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
 
-start_node_consumer(Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Broker, TopicPartitionStates).
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
 
 fetch_request_history() ->
     lists:filtermap(

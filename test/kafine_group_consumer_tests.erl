@@ -12,7 +12,7 @@
 -define(HEARTBEAT_INTERVAL_MS, 30).
 -define(PROTOCOL_NAME, <<"kafine">>).
 -define(PROTOCOL_TYPE, <<"kafine">>).
--define(REBALANCE_REF, rebalance).
+-define(REBALANCE_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GENERATION_ID_1, 1).
 -define(GENERATION_ID_2, 2).
 -define(WAIT_TIMEOUT_MS, 2_000).
@@ -49,7 +49,7 @@ leader_assign_and_fetch() ->
         [kafine, rebalance, join_group],
         [kafine, rebalance, leader]
     ]),
-    Topic = ?TOPIC_NAME,
+    Topics = [?TOPIC_NAME],
     Partitions = [0, 1, 2, 3],
 
     ClientId = <<"consumer_a">>,
@@ -65,19 +65,20 @@ leader_assign_and_fetch() ->
 
     GroupId = ?GROUP_ID,
     TopicOptions = #{},
+    SubscriptionCallback =
+        {?MEMBERSHIP_CALLBACK, [
+            Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
+        ]},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         ?REBALANCE_REF,
         Broker,
         #{},
         GroupId,
         #{
-            subscription_callback =>
-                {?MEMBERSHIP_CALLBACK, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
+            subscription_callback => SubscriptionCallback,
             assignment_callback => {test_assignment_callback, undefined}
         },
-        [Topic]
+        Topics
     ),
 
     % Wait for the 'join_group' event.
@@ -99,7 +100,7 @@ leader_assign_and_fetch() ->
         kamock_fetch,
         handle_fetch_request,
         [
-            meck:is(expected_fetch_request(ClientId, Topic, Partitions)), '_'
+            meck:is(expected_fetch_request(ClientId, ?TOPIC_NAME, Partitions)), '_'
         ],
         ?WAIT_TIMEOUT_MS
     ),
@@ -115,6 +116,7 @@ leader_revoke_and_reassign() ->
         [kafine, rebalance, leader]
     ]),
     Topic = ?TOPIC_NAME,
+    Topics = [Topic],
 
     ClientId = <<"consumer_a">>,
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
@@ -129,10 +131,10 @@ leader_revoke_and_reassign() ->
     Partitions01 = [0, 1],
     Partitions23 = [2, 3],
     Assignment01 = kafcod_consumer_protocol:encode_assignment(
-        [#{topic => Topic, partitions => Partitions01}], <<>>
+        [#{topic => ?TOPIC_NAME, partitions => Partitions01}], <<>>
     ),
     Assignment23 = kafcod_consumer_protocol:encode_assignment(
-        [#{topic => Topic, partitions => Partitions23}], <<>>
+        [#{topic => ?TOPIC_NAME, partitions => Partitions23}], <<>>
     ),
 
     meck:expect(
@@ -162,6 +164,10 @@ leader_revoke_and_reassign() ->
 
     GroupId = ?GROUP_ID,
     TopicOptions = #{},
+    SubscriptionCallback =
+        {?MEMBERSHIP_CALLBACK, [
+            Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
+        ]},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         ?REBALANCE_REF,
         Broker,
@@ -169,13 +175,10 @@ leader_revoke_and_reassign() ->
         GroupId,
         #{
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback =>
-                {?MEMBERSHIP_CALLBACK, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
+            subscription_callback => SubscriptionCallback,
             assignment_callback => {test_assignment_callback, undefined}
         },
-        [Topic]
+        Topics
     ),
 
     % Wait until we're the leader
@@ -258,7 +261,7 @@ leader_revoke_and_reassign() ->
 
 resumes_fetching_from_committed_offset() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    Topic = ?TOPIC_NAME,
+    Topics = [?TOPIC_NAME],
     Partitions = [0, 1, 2, 3],
     % Pretend like we committed offsets to each partition
     meck:expect(
@@ -282,6 +285,7 @@ resumes_fetching_from_committed_offset() ->
                          || P = CO <- Partitions
                         ]
                     }
+                 || Topic <- Topics
                 ]
             }
         end
@@ -298,19 +302,20 @@ resumes_fetching_from_committed_offset() ->
 
     GroupId = ?GROUP_ID,
     TopicOptions = #{},
+    SubscriptionCallback =
+        {?MEMBERSHIP_CALLBACK, [
+            Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
+        ]},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         ?REBALANCE_REF,
         Broker,
         #{},
         GroupId,
         #{
-            subscription_callback =>
-                {?MEMBERSHIP_CALLBACK, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
+            subscription_callback => SubscriptionCallback,
             assignment_callback => {test_assignment_callback, undefined}
         },
-        [Topic]
+        Topics
     ),
 
     % Check if we started fetching from the committed offsets
@@ -319,7 +324,7 @@ resumes_fetching_from_committed_offset() ->
         kamock_fetch,
         handle_fetch_request,
         [
-            meck:is(expected_fetch_request_fetch_offsets(Topic)),
+            meck:is(expected_fetch_request_fetch_offsets(?TOPIC_NAME)),
             '_'
         ],
         ?WAIT_TIMEOUT_MS
@@ -386,7 +391,7 @@ offset_commit_from_consumer_callback() ->
         {ok, {Ref, [Ms] ++ [M]}}
     end),
     % We commit offsets in the consumer callback end_record_batch
-    Topic = ?TOPIC_NAME,
+    Topics = [?TOPIC_NAME],
     meck:expect(
         offset_commit_callback,
         end_record_batch,
@@ -414,7 +419,6 @@ offset_commit_from_consumer_callback() ->
     ClientId = <<"consumer_a">>,
     GroupId = ?GROUP_ID,
     Ref = ?REBALANCE_REF,
-    TopicOptions = #{},
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     {ok, Consumer} = kafine_consumer:start_link(
@@ -425,19 +429,21 @@ offset_commit_from_consumer_callback() ->
         #{}
     ),
 
+    TopicOptions = #{},
+    SubscriptionCallback =
+        {?MEMBERSHIP_CALLBACK, [
+            Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
+        ]},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         Ref,
         Broker,
         #{},
         GroupId,
         #{
-            subscription_callback =>
-                {?MEMBERSHIP_CALLBACK, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
+            subscription_callback => SubscriptionCallback,
             assignment_callback => {test_assignment_callback, undefined}
         },
-        [Topic]
+        Topics
     ),
     % Wait for the messages to be processed
     % by default, end_record_batch is called once per partition per message on the mock broker
@@ -451,7 +457,7 @@ offset_commit_from_consumer_callback() ->
         fun offset_fetch_request:encode_offset_fetch_request_4/1,
         #{
             group_id => GroupId,
-            topics => [#{name => Topic, partition_indexes => [0, 1, 2, 3]}]
+            topics => [#{name => ?TOPIC_NAME, partition_indexes => [0, 1, 2, 3]}]
         },
         fun offset_fetch_response:decode_offset_fetch_response_4/1
     ),
@@ -459,7 +465,7 @@ offset_commit_from_consumer_callback() ->
     % committed_offset is 1 because we wait for end_record_batch to be called twice for each partition (2 processsed messages)
     ExpectedResponse = [
         #{
-            name => Topic,
+            name => ?TOPIC_NAME,
             partitions =>
                 [
                     #{
@@ -489,9 +495,14 @@ membership_topic_options() ->
     ClientId = <<"consumer_a">>,
     GroupId = ?GROUP_ID,
     Ref = ?REBALANCE_REF,
+    % Two topics to test different ORPs
     Topic = <<"latest-topic">>,
     Topic2 = <<"earliest-topic">>,
-    TopicOptions = #{Topic => #{offset_reset_policy => latest}},
+    Topics = [Topic, Topic2],
+    TopicOptions = #{
+        Topic => #{offset_reset_policy => latest},
+        Topic2 => #{offset_reset_policy => earliest}
+    },
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
@@ -502,17 +513,17 @@ membership_topic_options() ->
         {kafine_consumer_callback_logger, []},
         #{}
     ),
-    % Two topics to test different ORPs
+    SubscriptionCallback =
+        {?MEMBERSHIP_CALLBACK, [
+            Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
+        ]},
     {ok, Rebalance} = kafine_eager_rebalance:start_link(
         Ref,
         Broker,
         #{},
         GroupId,
         #{
-            subscription_callback =>
-                {?MEMBERSHIP_CALLBACK, [
-                    Consumer, GroupId, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
+            subscription_callback => SubscriptionCallback,
             assignment_callback => {test_assignment_callback, undefined}
         },
         [Topic, Topic2]

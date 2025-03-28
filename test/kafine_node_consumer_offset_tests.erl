@@ -1,16 +1,17 @@
--module(kafine_node_consumer_fetch_batch_tests).
+-module(kafine_node_consumer_offset_tests).
 -include_lib("eunit/include/eunit.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION_1, 61).
+-define(PARTITION_2, 62).
 -define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
-        fun fetch_in_last_batch/0
+        fun reset_offsets_requests_are_combined/0
     ]}.
 
 setup() ->
@@ -23,42 +24,52 @@ setup() ->
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
+
+    meck:new(kamock_list_offsets, [passthrough]),
+    meck:new(kamock_fetch, [passthrough]),
     ok.
 
 cleanup(_) ->
     meck:unload().
 
-fetch_in_last_batch() ->
+reset_offsets_requests_are_combined() ->
+    % If we get a bunch of OFFSET_OUT_OF_RANGE errors, we want to avoid multiple round-trips and combine the ListOffsets
+    % requests into one.
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     TopicName = ?TOPIC_NAME,
     TopicPartitionStates = init_topic_partition_states(#{
         TopicName => #{
-            ?PARTITION_1 => #{offset => 12}
+            ?PARTITION_1 => #{offset => 123},
+            ?PARTITION_2 => #{offset => 123}
         }
     }),
 
-    MessageBuilder = fun(_T, _P, O) ->
-        Key = iolist_to_binary(io_lib:format("key~B", [O])),
-        #{key => Key}
-    end,
-    meck:expect(
-        kamock_partition_data,
-        make_partition_data,
-        kamock_partition_data:batches(0, 14, 3, MessageBuilder)
-    ),
-
     {ok, Pid} = start_node_consumer(?CONSUMER_REF, Broker, TopicPartitionStates),
 
-    % We should reach parity at some point.
+    % Wait until we get end_batch.
+    [
+        meck:wait(
+            test_consumer_callback,
+            end_record_batch,
+            ['_', P, '_', '_', '_'],
+            ?WAIT_TIMEOUT_MS
+        )
+     || P <- [?PARTITION_1, ?PARTITION_2]
+    ],
 
-    % TODO: We don't really have a good way to detect parity with a meck matcher. Does that tell us that our API is a
-    % bit suss?
-    meck:wait(
-        test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_1, 14, '_', '_'],
-        ?WAIT_TIMEOUT_MS
+    % There should only be one ListOffsets request.
+    [{_, {_, handle_list_offsets_request, [ListOffsetsRequest, _]}, ListOffsetsResponse}] = meck:history(
+        kamock_list_offsets
+    ),
+    % It should be for both partitions.
+    ?assertMatch(
+        #{topics := [#{name := TopicName, partitions := [_, _]}]},
+        ListOffsetsRequest
+    ),
+    ?assertMatch(
+        #{topics := [#{name := TopicName, partitions := [#{offset := 0}, #{offset := 0}]}]},
+        ListOffsetsResponse
     ),
 
     kafine_node_consumer:stop(Pid),
@@ -66,11 +77,11 @@ fetch_in_last_batch() ->
     kamock_broker:stop(Broker),
     ok.
 
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
+
 init_topic_partition_states(InitStates) ->
     kafine_fetch_response_tests:init_topic_partition_states(InitStates).
 
 cleanup_topic_partition_states(TopicPartitionStates) ->
     kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
-
-start_node_consumer(Ref, Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).

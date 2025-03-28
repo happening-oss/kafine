@@ -1,7 +1,9 @@
 -module(kafine_topic_partition_states).
 -export([
     merge_topic_partition_states/2,
-    take_partition_states/2
+    remove/2,
+    take_partition_states/2,
+    count/1
 ]).
 
 merge_topic_partition_states(TopicPartitionStates0, TopicPartitionStates1) ->
@@ -19,6 +21,22 @@ combine_partition_states(TopicName, PartitionStates0, PartitionStates1) ->
         end,
         PartitionStates0,
         PartitionStates1
+    ).
+
+remove(TopicPartitions, TopicPartitionStates) ->
+    maps:fold(
+        fun(Topic, Partitions, Acc) ->
+            lists:foldl(
+                fun(Partition, Acc2) ->
+                    % Returns the existing map if the key doesn't exist.
+                    kafine_maps:remove([Topic, Partition], Acc2)
+                end,
+                Acc,
+                Partitions
+            )
+        end,
+        TopicPartitionStates,
+        TopicPartitions
     ).
 
 -spec take_partition_states(
@@ -39,3 +57,12 @@ take_partition_states([{Topic, Partition} | TopicPartitions], Take, Keep) ->
     {Value, Keep2} = kafine_maps:take([Topic, Partition], Keep),
     Take2 = kafine_maps:put([Topic, Partition], Value, Take),
     take_partition_states(TopicPartitions, Take2, Keep2).
+
+count(TopicPartitionStates) ->
+    maps:fold(
+        fun(_Topic, PartitionStates, Acc) ->
+            map_size(PartitionStates) + Acc
+        end,
+        0,
+        TopicPartitionStates
+    ).

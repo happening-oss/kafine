@@ -3,7 +3,7 @@
 
 -include("history_matchers.hrl").
 
--define(CALLBACK_STATE, ?MODULE).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [

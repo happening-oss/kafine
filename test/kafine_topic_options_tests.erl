@@ -3,15 +3,18 @@
 
 missing_options_test() ->
     ?assertEqual(
-        #{offset_reset_policy => earliest}, kafine_topic_options:validate_options(#{})
+        #{
+            initial_offset => earliest,
+            offset_reset_policy => latest
+        },
+        kafine_topic_options:validate_options(#{})
     ),
     ok.
 
 missing_topic_2_test() ->
-    % TODO: These tests only make sense for separate Topic, TopicOptions; we're gonna merge them.
     Topics = [<<"missing">>],
     ?assertEqual(
-        #{<<"missing">> => #{offset_reset_policy => earliest}},
+        #{<<"missing">> => #{initial_offset => earliest, offset_reset_policy => latest}},
         kafine_topic_options:validate_options(Topics, #{})
     ),
     ok.
@@ -19,7 +22,7 @@ missing_topic_2_test() ->
 missing_options_2_test() ->
     Topics = [<<"present">>],
     ?assertEqual(
-        #{<<"present">> => #{offset_reset_policy => earliest}},
+        #{<<"present">> => #{initial_offset => earliest, offset_reset_policy => latest}},
         kafine_topic_options:validate_options(Topics, #{<<"present">> => #{}})
     ),
     ok.

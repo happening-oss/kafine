@@ -131,6 +131,16 @@ call(Pid, Encoder, Args, Decoder, Metadata) ->
 send_request(Pid, Encoder, Args, Decoder, Label0, ReqIdCollection) ->
     send_request(Pid, Encoder, Args, Decoder, Label0, ReqIdCollection, _Metadata = #{}).
 
+-spec send_request(
+    Connection :: kafine:connection(),
+    Encoder :: encoder_fun(),
+    Request :: map(),
+    Decoder :: decoder_fun(),
+    Label :: term(),
+    ReqIdCollection :: request_id_collection(),
+    Metadata :: telemetry:event_metadata()
+) -> request_id_collection().
+
 send_request(Pid, Encoder, Args, Decoder, Label0, ReqIdCollection, Metadata) when
     is_pid(Pid), is_function(Encoder, 1), is_map(Args), is_function(Decoder, 1), is_map(Metadata)
 ->

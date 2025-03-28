@@ -158,24 +158,15 @@ handle_response({error, {closed, _PreviousConnection}}, _, _, StateData) ->
     {keep_state, StateData, []}.
 
 handle_metadata_response(
-    _MetadataResponse = #{topics := TopicPartitions0},
+    _MetadataResponse = #{topics := TopicPartitions},
     _State,
     #state{
         connection = Connection,
-        subscription_callback = {SubscriptionCallback, SubscriptionState0},
-        assignment_callback = {AssignmentCallback, AssignmentState0}
+        assignment_callback = {AssignmentCallback, AssignmentState0},
+        subscription_callback = {SubscriptionCallback, SubscriptionState0}
     }
 ) ->
-    AssignedTopicPartitions = lists:foldl(
-        fun(#{name := T, partitions := Ps0, error_code := ?NONE}, Acc1) ->
-            Ps = lists:sort(
-                lists:map(fun(#{error_code := ?NONE, partition_index := P}) -> P end, Ps0)
-            ),
-            Acc1#{T => Ps}
-        end,
-        #{},
-        TopicPartitions0
-    ),
+    AssignedTopicPartitions = convert_topic_partitions(TopicPartitions),
     kafine_assignment:handle_assignment(
         AssignedTopicPartitions,
         #{},
@@ -204,3 +195,20 @@ terminate(
 ) ->
     kafine_connection:stop(Connection),
     ok.
+
+%% Convert from Kafka list-of-maps to our preferred representation.
+-type metadata_response_topic() :: metadata_response:metadata_response_topic_9().
+-spec convert_topic_partitions(TopicPartitions :: [metadata_response_topic()]) ->
+    #{kafine:topic() => [kafine:partition()]}.
+
+convert_topic_partitions(TopicPartitions) ->
+    lists:foldl(
+        fun(#{name := T, partitions := Ps0, error_code := ?NONE}, Acc1) ->
+            Ps = lists:sort(
+                lists:map(fun(#{error_code := ?NONE, partition_index := P}) -> P end, Ps0)
+            ),
+            Acc1#{T => Ps}
+        end,
+        #{},
+        TopicPartitions
+    ).
