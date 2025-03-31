@@ -149,9 +149,9 @@ Used when starting a topic consumer.
 %% Callback must implement the kafine_consumer_callback behaviour.
 
 -type consumer_ref() :: term().
--type start_topic_consumer_ret() :: {ok, undefined | pid()}.
+-type start_topic_consumer_ret() :: supervisor:startchild_ret().
 % TODO: This isn't actually the correct type; it keeps eqalizer happy.
--type start_group_consumer_ret() :: {ok, undefined | pid()}.
+-type start_group_consumer_ret() :: supervisor:startchild_ret().
 
 ?DOC("""
 Start a simple consumer for one or more topics.

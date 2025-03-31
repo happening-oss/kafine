@@ -70,7 +70,7 @@ services:
 
   kafka-ui:
     container_name: kafka-ui
-    image: ghcr.io/kafbat/kafka-ui:v1.1.0
+    image: ghcr.io/kafbat/kafka-ui:v1.2.0
     environment:
       - SPRING_CONFIG_ADDITIONAL-LOCATION=/kafka-ui.yaml
     ports:
@@ -81,7 +81,7 @@ services:
   {{#if monitoring_enabled}}
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:v3.2.0
+    image: prom/prometheus:v3.2.1
     ports:
       - "9090:9090"
     volumes:
@@ -89,7 +89,7 @@ services:
 
   grafana:
     container_name: grafana
-    image: grafana/grafana:11.5.1
+    image: grafana/grafana:11.6.1
     ports:
       - "3000:3000"
     environment:

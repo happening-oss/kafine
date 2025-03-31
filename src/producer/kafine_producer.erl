@@ -102,8 +102,8 @@ callback_mode() ->
     batch_attributes :: map(),
     produce_options :: map(),
     messages :: [map()],
-    remaining_retries :: pos_integer(),
-    retry_count :: pos_integer(),
+    remaining_retries :: non_neg_integer(),
+    retry_count :: non_neg_integer(),
     initial_backoff_ms :: pos_integer(),
     multiplier :: pos_integer(),
     jitter :: float()
@@ -206,14 +206,14 @@ handle_response(
     _State,
     StateData
 ) ->
-    IsRetirable = is_retryable_error(ErrorCode),
+    IsRetryable = is_retryable_error(ErrorCode),
     case ErrorCode of
         ?NOT_LEADER_OR_FOLLOWER ->
             % this should eventually make progress so not going to update retry count
             {keep_state, StateData, [
                 {next_event, internal, refresh_metadata}, {next_event, {call, From}, Req}
             ]};
-        _ErrorCode when IsRetirable ->
+        _ErrorCode when IsRetryable ->
              BackoffDuration = calculate_backoff(Req),
             Req1 = Req#request{
                 remaining_retries = Req#request.remaining_retries - 1,
@@ -226,7 +226,7 @@ handle_response(
     end;
 handle_response(
     ProduceResponse,
-    {produce, From, _OriginalRequest, _RetriesLeft},
+    {produce, From, _OriginalRequest},
     _State,
     StateData
 ) ->

@@ -67,7 +67,7 @@ kill:
 rm:
 	docker compose rm -f
 
-# cargo install hbs-cli
+# cargo install hbs-cli; only needed to regenerate the (checked-in) yaml files.
 HBS_CLI := hbs-cli
 
 # Pipe through 'yq' to prettify it.
