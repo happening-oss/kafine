@@ -13,8 +13,8 @@
 -define(PROTOCOL_NAME, <<"kafine">>).
 -define(PROTOCOL_TYPE, <<"kafine">>).
 -define(REBALANCE_REF, {?MODULE, ?FUNCTION_NAME}).
--define(GENERATION_ID_1, 1).
--define(GENERATION_ID_2, 2).
+-define(GROUP_GENERATION_1, 1).
+-define(GROUP_GENERATION_2, 2).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -94,14 +94,13 @@ leader_assign_and_fetch() ->
 
     ?assertMatch({leader, _}, sys:get_state(Rebalance)),
 
-    % Wait for the expected fetches to happen
-    meck:wait(
-        2,
+    % Wait for the expected fetches to happen.
+    meck:wait_for(
+        fetched_partitions(?TOPIC_NAME, Partitions),
         kamock_fetch,
         handle_fetch_request,
-        [
-            meck:is(expected_fetch_request(ClientId, ?TOPIC_NAME, Partitions)), '_'
-        ],
+        [meck:is(is_client_id(ClientId)), '_'],
+        '_',
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -110,6 +109,24 @@ leader_assign_and_fetch() ->
     kafine_consumer:stop(Consumer),
     kamock_broker:stop(Broker),
     ok.
+
+fetched_partitions(ExpectedTopic, ExpectedPartitions) ->
+    Cond = fun([#{topics := Topics}, _], Expected) ->
+        ActualPartitions = [
+            P
+         || #{topic := T, partitions := Ps} <- Topics, T =:= ExpectedTopic, #{partition := P} <- Ps
+        ],
+        case Expected -- ActualPartitions of
+            [] -> {halt, ok};
+            RemainingPartitions -> {cont, RemainingPartitions}
+        end
+    end,
+    {Cond, ExpectedPartitions}.
+
+is_client_id(ExpectedClientId) ->
+    fun(#{client_id := ActualClientId}) ->
+        ActualClientId =:= ExpectedClientId
+    end.
 
 leader_revoke_and_reassign() ->
     TelemetryRef = telemetry_test:attach_event_handlers(self(), [
@@ -124,7 +141,7 @@ leader_revoke_and_reassign() ->
     meck:expect(
         kamock_join_group,
         handle_join_group_request,
-        kamock_join_group:as_leader(?GENERATION_ID_1)
+        kamock_join_group:as_leader(?GROUP_GENERATION_1)
     ),
 
     % Assign [0,1] and [2,3]
@@ -192,13 +209,12 @@ leader_revoke_and_reassign() ->
     #{topic_partitions := #{Topic := #{0 := _, 1 := _}}} = kafine_node_consumer:info(NodeConsumer),
 
     % Wait for the expected fetches to happen
-    meck:wait(
-        2,
+    meck:wait_for(
+        fetched_partitions(?TOPIC_NAME, Partitions01),
         kamock_fetch,
         handle_fetch_request,
-        [
-            meck:is(expected_fetch_request(ClientId, Topic, Partitions01)), '_'
-        ],
+        [meck:is(is_client_id(ClientId)), '_'],
+        '_',
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -223,14 +239,14 @@ leader_revoke_and_reassign() ->
     meck:expect(
         kamock_join_group,
         handle_join_group_request,
-        kamock_join_group:as_leader(?GENERATION_ID_2)
+        kamock_join_group:as_leader(?GROUP_GENERATION_2)
     ),
 
     % Trigger a rebalance.
     meck:expect(
         kamock_heartbeat,
         handle_heartbeat_request,
-        kamock_heartbeat:expect_generation_id(?GENERATION_ID_2)
+        kamock_heartbeat:expect_generation_id(?GROUP_GENERATION_2)
     ),
 
     % Wait until we're the leader
@@ -242,14 +258,14 @@ leader_revoke_and_reassign() ->
     #{node_consumers := #{101 := NodeConsumer2}} = kafine_consumer:info(Consumer),
     #{topic_partitions := #{Topic := #{2 := _, 3 := _}}} = kafine_node_consumer:info(NodeConsumer2),
 
-    % Wait for the new expected fetches to happen
-    meck:wait(
-        2,
+    % Wait for the new expected fetches to happen; twice. which is why this tests fails, because the second bout is
+    % non-deterministic.
+    meck:wait_for(
+        fetched_partitions(?TOPIC_NAME, Partitions23),
         kamock_fetch,
         handle_fetch_request,
-        [
-            meck:is(expected_fetch_request(ClientId, Topic, Partitions23)), '_'
-        ],
+        [meck:is(is_client_id(ClientId)), '_'],
+        '_',
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -335,19 +351,6 @@ resumes_fetching_from_committed_offset() ->
     kamock_broker:stop(Broker),
 
     ok.
-
-expected_fetch_request(ClientId, Topic, ExpectedPs) ->
-    % Check that the fetch request matches our expected clientId and topic
-    fun(#{client_id := C, topics := [#{partitions := Ps, topic := T}]}) when
-        C =:= ClientId, T =:= Topic
-    ->
-        ActualPs = lists:map(
-            fun(#{partition := P}) -> P end,
-            Ps
-        ),
-        % Check that the partitions we are fetching from match the expected partitions
-        lists:sort(ExpectedPs) =:= lists:sort(ActualPs)
-    end.
 
 expected_fetch_request_fetch_offsets(Topic) ->
     fun(

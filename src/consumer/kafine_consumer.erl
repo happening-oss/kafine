@@ -13,7 +13,8 @@
     resume/4
 ]).
 -export([
-    init_ack/4
+    init_ack/4,
+    continue/6
 ]).
 -behaviour(gen_statem).
 -export([
@@ -38,13 +39,13 @@
 -type topic_partition_state() :: #topic_partition_state{}.
 
 -type topic_partition_states() :: #{
-    kafine:topic() :=
-        #{kafine:partition() := topic_partition_state()}
+    kafine:topic() =>
+        #{kafine:partition() => topic_partition_state()}
 }.
 
 -export_type([topic_partition_states/0]).
 
--type partition_offsets() :: #{kafine:partition() := kafine:offset()}.
+-type partition_offsets() :: #{kafine:partition() => kafine:offset()}.
 
 -spec start_link(
     Ref :: ref(),
@@ -79,14 +80,22 @@ via(Ref) ->
 stop(Consumer) when is_pid(Consumer) ->
     gen_statem:stop(Consumer).
 
--type subscription() :: #{kafine:topic() := {kafine:topic_options(), partition_offsets()}}.
--spec subscribe(Consumer :: pid(), Subscription :: subscription()) -> ok.
-
 info(Consumer) ->
     call(Consumer, info).
 
+-type subscription() :: #{kafine:topic() => {kafine:topic_options(), partition_offsets()}}.
+-spec subscribe(
+    Consumer :: kafine_consumer:ref() | pid(),
+    Subscription :: subscription()
+) -> ok.
+
 subscribe(Consumer, Subscription) ->
     call(Consumer, {subscribe, Subscription}).
+
+-spec unsubscribe(
+    Consumer :: kafine_consumer:ref() | pid(),
+    Unsubscription :: #{kafine:topic() => [kafine:partition()]}
+) -> ok.
 
 unsubscribe(Consumer, Unsubscription) ->
     call(Consumer, {unsubscribe, Unsubscription}).
@@ -94,7 +103,15 @@ unsubscribe(Consumer, Unsubscription) ->
 unsubscribe_all(Consumer) ->
     call(Consumer, unsubscribe_all).
 
-resume(Consumer, Topic, Partition) ->
+-spec resume(
+    Consumer :: pid() | ref(),
+    Topic :: kafine:topic(),
+    Partition :: kafine:partition()
+) -> ok.
+
+resume(Consumer, Topic, Partition) when
+    is_binary(Topic), is_integer(Partition), Partition >= 0
+->
     resume(Consumer, Topic, Partition, keep_current_offset).
 
 -spec resume(
@@ -104,8 +121,24 @@ resume(Consumer, Topic, Partition) ->
     Offset :: kafine:offset() | keep_current_offset
 ) -> ok.
 
-resume(Consumer, Topic, Partition, Offset) ->
+-define(IS_VALID_RESUME_OFFSET(X),
+    ((is_integer(X) andalso X >= 0) orelse X =:= keep_current_offset)
+).
+
+resume(Consumer, Topic, Partition, Offset) when
+    is_binary(Topic),
+    is_integer(Partition),
+    Partition >= 0,
+    ?IS_VALID_RESUME_OFFSET(Offset)
+->
     call(Consumer, {resume, {Topic, Partition, Offset}}).
+
+% Continue fetching the given topic and partition from the specified offset. Called from the consumer callback process.
+%
+% The NextOffset is provided by the callback because only it knows how far we got through the partition data before
+% (e.g.) pausing.
+continue(Consumer, Topic, Partition, NextOffset, NextState, Span) ->
+    call(Consumer, {continue, {Topic, Partition, NextOffset, NextState, Span}}).
 
 call(Consumer, Request) when is_pid(Consumer) ->
     gen_statem:call(Consumer, Request);
@@ -136,12 +169,15 @@ callback_mode() ->
     connection_options :: kafine:connection_options(),
     consumer_options :: kafine:consumer_options(),
     consumer_callback :: {module(), term()},
-    topic_options :: #{kafine:topic() := kafine:topic_options()},
-    node_consumers :: #{kafine:node_id() := pid()}
+    topic_options :: #{kafine:topic() => kafine:topic_options()},
+    node_consumers :: #{kafine:node_id() => pid()}
 }).
 
 init([Ref, Bootstrap, ConnectionOptions, ConsumerCallback, ConsumerOptions]) ->
     process_flag(trap_exit, true),
+    Metadata = #{ref => Ref},
+    logger:set_process_metadata(Metadata),
+    kafine_proc_lib:set_label({?MODULE, Ref}),
     StateData = #state{
         ref = Ref,
         broker = Bootstrap,
@@ -245,6 +281,20 @@ handle_event(
                 kafine_node_consumer:resume(Pid, Topic, Partition, Offset)
         end,
         {error, {badkey, [Topic, Partition]}},
+        NodeConsumers
+    ),
+    {keep_state_and_data, [{reply, From, ok}]};
+handle_event(
+    {call, From},
+    {continue, {Topic, Partition, NextOffset, NextState, Span}},
+    _State,
+    _StateData = #state{node_consumers = NodeConsumers}
+) ->
+    % Ask each of the node consumers to continue the topic/partition; ignore the results.
+    maps:foreach(
+        fun(_NodeId, Pid) ->
+            kafine_node_consumer:continue(Pid, Topic, Partition, NextOffset, NextState, Span)
+        end,
         NodeConsumers
     ),
     {keep_state_and_data, [{reply, From, ok}]};
@@ -404,7 +454,7 @@ init_topic_partition_states(Ref, {Callback, CallbackArgs}, Subscription) ->
     ).
 
 -spec get_node_by_id([Node], NodeId :: non_neg_integer()) -> Node when
-    Node :: #{node_id := integer(), host := binary(), port := integer(), _ := _}.
+    Node :: #{node_id := integer(), host := binary(), port := integer()}.
 
 get_node_by_id(Nodes, NodeId) when is_list(Nodes), is_integer(NodeId) ->
     [Node] = [N || N = #{node_id := Id} <- Nodes, Id =:= NodeId],

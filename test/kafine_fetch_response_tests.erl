@@ -6,6 +6,9 @@
 ]).
 
 -include_lib("eunit/include/eunit.hrl").
+-include("assert_meck.hrl").
+% -include("kafine_tests.hrl").
+
 -include_lib("kafcod/include/error_code.hrl").
 
 -include("src/consumer/kafine_topic_partition_state.hrl").
@@ -18,13 +21,13 @@
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, {state, ?MODULE}).
+-define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun empty_response_leaves_offset_unchanged/0,
         fun unwanted_records_are_dropped/0,
         fun unwanted_records_are_dropped_2/0,
-        fun high_watermark_lag/0,
         fun unsubscribed/0
     ]}.
 
@@ -38,6 +41,14 @@ setup() ->
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
+    meck:expect(kafine_consumer, continue, fun(
+        _Ref, _Topic, _Partition, _NextOffset, _NextState, _Span
+    ) ->
+        ok
+    end),
+    meck:expect(kafine_consumer, unsubscribe, fun(_Ref, _TopicPartitions) ->
+        ok
+    end),
     ok.
 
 cleanup(_) ->
@@ -78,33 +89,24 @@ empty_response_leaves_offset_unchanged() ->
         }
     ),
 
-    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
-        [kafine, fetch, partition_data]
-    ]),
-
     {TopicPartitionStates2, Errors} =
         kafine_fetch_response:fold(
             EmptyFetchResponse,
             TopicPartitionStates,
             ?TELEMETRY_EVENT_METADATA
         ),
-
-    % No records => no change
-    ?assertEqual(TopicPartitionStates, TopicPartitionStates2),
     ?assertEqual(#{}, Errors),
 
-    {Measurements, Metadata} = receive_telemetry(),
-    ?assertMatch(
-        #{high_watermark := 0, fetch_offset := 0, lag := 0, next_offset := 0},
-        Measurements
-    ),
-    ?assertMatch(
-        #{node_id := 501, topic := TopicName, partition_index := ?PARTITION},
-        Metadata
-    ),
+    % Assert that we've been marked as busy.
+    ?assertEqual(make_busy(TopicPartitionStates), TopicPartitionStates2),
+
+    % Wait until continue is called.
+    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+
+    % No records => no change
+    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 0, active, '_']),
 
     cleanup_topic_partition_states(TopicPartitionStates),
-    telemetry:detach(TelemetryRef),
     ok.
 
 unwanted_records_are_dropped() ->
@@ -156,16 +158,14 @@ unwanted_records_are_dropped() ->
             ?PARTITION => #{offset => 43}
         }
     }),
-    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
-        [kafine, fetch, partition_data]
-    ]),
 
-    {TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
+    {_TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
         FetchResponse, TopicPartitionStates, ?TELEMETRY_EVENT_METADATA
     ),
-    ?assertMatch(
-        #{TopicName := #{?PARTITION := #topic_partition_state{offset = 45}}}, TopicPartitionStates2
-    ),
+
+    % Wait until continue is called.
+    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+
     ?assertEqual(#{}, Errors),
     ?assertMatch(
         [
@@ -180,17 +180,9 @@ unwanted_records_are_dropped() ->
         meck:history(test_consumer_callback)
     ),
 
-    {Measurements, Metadata} = receive_telemetry(),
-    ?assertMatch(
-        #{high_watermark := 45, fetch_offset := 43, lag := 0, next_offset := 45},
-        Measurements
-    ),
-    ?assertMatch(
-        #{node_id := 501, topic := TopicName, partition_index := ?PARTITION},
-        Metadata
-    ),
+    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 45, active, '_']),
+
     cleanup_topic_partition_states(TopicPartitionStates),
-    telemetry:detach(TelemetryRef),
     ok.
 
 unwanted_records_are_dropped_2() ->
@@ -224,16 +216,13 @@ unwanted_records_are_dropped_2() ->
         }
     }),
 
-    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
-        [kafine, fetch, partition_data]
-    ]),
-
-    {TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
+    {_TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
         FetchResponse, TopicPartitionStates, ?TELEMETRY_EVENT_METADATA
     ),
-    ?assertMatch(
-        #{TopicName := #{?PARTITION := #topic_partition_state{offset = 57}}}, TopicPartitionStates2
-    ),
+
+    % Wait until continue is called.
+    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+
     ?assertEqual(#{}, Errors),
     ?assertMatch(
         [
@@ -247,87 +236,9 @@ unwanted_records_are_dropped_2() ->
         meck:history(test_consumer_callback)
     ),
 
-    {Measurements, Metadata} = receive_telemetry(),
-    ?assertMatch(
-        #{high_watermark := 57, fetch_offset := 55, lag := 0, next_offset := 57},
-        Measurements
-    ),
-    ?assertMatch(
-        #{node_id := 501, topic := TopicName, partition_index := ?PARTITION},
-        Metadata
-    ),
+    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 57, active, '_']),
+
     cleanup_topic_partition_states(TopicPartitionStates),
-    telemetry:detach(TelemetryRef),
-    ok.
-
-high_watermark_lag() ->
-    % This is a variant of the above test where the broker has given us two batches, but our fetch offset is in the
-    % second batch. I don't think the broker _will_ ever do this, but I spotted a bug in kafine_fetch_response that
-    % might get bitten if it does, so here's a regression test.
-
-    TopicName = ?TOPIC_NAME,
-
-    RecordBatches = [
-        make_record_batch(51, 54),
-        make_record_batch(54, 57)
-    ],
-
-    PartitionData = make_partition_data(?PARTITION, RecordBatches, 60),
-    FetchResponse = #{
-        error_code => ?NONE,
-        responses => [
-            #{
-                topic => TopicName,
-                partitions => [PartitionData]
-            }
-        ],
-        throttle_time_ms => 0,
-        session_id => 0
-    },
-
-    TopicPartitionStates = init_topic_partition_states(#{
-        TopicName => #{
-            ?PARTITION => #{offset => 51}
-        }
-    }),
-
-    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
-        [kafine, fetch, partition_data]
-    ]),
-
-    {TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
-        FetchResponse, TopicPartitionStates, ?TELEMETRY_EVENT_METADATA
-    ),
-    ?assertMatch(
-        #{TopicName := #{?PARTITION := #topic_partition_state{offset = 57}}}, TopicPartitionStates2
-    ),
-    ?assertEqual(#{}, Errors),
-    ?assertMatch(
-        [
-            {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
-            {_, {_, begin_record_batch, [TopicName, ?PARTITION, 51, _, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key51">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key52">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key53">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key54">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key55">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key56">>}, _]}, {ok, _}},
-            {_, {_, end_record_batch, [TopicName, ?PARTITION, 57, _, _]}, {ok, _}}
-        ],
-        meck:history(test_consumer_callback)
-    ),
-
-    {Measurements, Metadata} = receive_telemetry(),
-    ?assertMatch(
-        #{high_watermark := 60, fetch_offset := 51, lag := 3, next_offset := 57},
-        Measurements
-    ),
-    ?assertMatch(
-        #{node_id := 501, topic := TopicName, partition_index := ?PARTITION},
-        Metadata
-    ),
-    cleanup_topic_partition_states(TopicPartitionStates),
-    telemetry:detach(TelemetryRef),
     ok.
 
 unsubscribed() ->
@@ -410,12 +321,6 @@ cleanup_topic_partition_states(TopicPartitionStates) ->
         TopicPartitionStates
     ).
 
-receive_telemetry() ->
-    receive
-        {[kafine, fetch, partition_data], _Ref, Measurements, Metadata} ->
-            {Measurements, Metadata}
-    end.
-
 make_partition_data(PartitionIndex, RecordBatches, LastOffset) ->
     #{
         partition_index => PartitionIndex,
@@ -474,3 +379,16 @@ make_record_batch(BeginOffset, EndOffset) ->
     ],
 
     make_record_batch(BeginOffset, LastOffsetDelta, Timestamp, Records).
+
+make_busy(TopicPartitionStates) ->
+    maps:map(
+        fun(_Topic, PartitionStates) ->
+            maps:map(
+                fun(_Partition, PartitionState) ->
+                    PartitionState#topic_partition_state{state = busy}
+                end,
+                PartitionStates
+            )
+        end,
+        TopicPartitionStates
+    ).

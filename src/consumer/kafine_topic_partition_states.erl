@@ -23,6 +23,11 @@ combine_partition_states(TopicName, PartitionStates0, PartitionStates1) ->
         PartitionStates1
     ).
 
+-spec remove(
+    TopicPartitions :: #{kafine:topic() => [kafine:partition()]},
+    TopicPartitionStates :: kafine_consumer:topic_partition_states()
+) -> kafine_consumer:topic_partition_states().
+
 remove(TopicPartitions, TopicPartitionStates) ->
     maps:fold(
         fun(Topic, Partitions, Acc) ->

@@ -54,7 +54,7 @@ call_assignment_callbacks_after_join_leader() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
             assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignor => kafine_range_assignor
+            assignors => [kafine_range_assignor]
         },
         Topics
     ),
@@ -118,7 +118,7 @@ call_assignments_callbacks_after_join_follower() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
             assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignor => kafine_range_assignor
+            assignors => [kafine_range_assignor]
         },
         Topics
     ),
@@ -203,7 +203,7 @@ call_assignment_callbacks_after_rebalance() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
             assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignor => kafine_range_assignor
+            assignors => [kafine_range_assignor]
         },
         Topics
     ),
@@ -273,7 +273,7 @@ call_assignment_callbacks_after_rebalance() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
             assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignor => kafine_range_assignor
+            assignors => [kafine_range_assignor]
         },
         Topics
     ),
@@ -347,7 +347,7 @@ assignment_callbacks_are_called_from_long_lived_process() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
             assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignor => kafine_range_assignor
+            assignors => [kafine_range_assignor]
         },
         Topics
     ),

@@ -10,8 +10,8 @@
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(CALLBACK_STATE, undefined).
 -define(REBALANCE_REF, {?MODULE, ?FUNCTION_NAME}).
--define(GENERATION_ID_1, 1).
--define(GENERATION_ID_2, 2).
+-define(GROUP_GENERATION_1, 1).
+-define(GROUP_GENERATION_2, 2).
 
 % Usually 3s, but we want something quicker for the tests.
 -define(HEARTBEAT_INTERVAL_MS, 30).
@@ -24,7 +24,8 @@ all_test_() ->
         fun leader_with_new_member/0,
         fun follower_with_new_member/0,
         fun not_coordinator/0,
-        fun offset_commit/0
+        fun offset_commit/0,
+        fun multiple_assignors/0
     ]}.
 
 setup() ->
@@ -43,6 +44,14 @@ setup() ->
     meck:expect(test_assignor, name, fun() -> <<"test">> end),
     meck:expect(test_assignor, metadata, fun(Topics) -> kafine_range_assignor:metadata(Topics) end),
     meck:expect(test_assignor, assign, fun(Members, TopicPartitions, AssignmentUserData) ->
+        kafine_range_assignor:assign(Members, TopicPartitions, AssignmentUserData)
+    end),
+
+    % One of the tests requires multiple assignors; we provide a second one here.
+    meck:new(test_assignor2, [non_strict]),
+    meck:expect(test_assignor2, name, fun() -> <<"test2">> end),
+    meck:expect(test_assignor2, metadata, fun(Topics) -> kafine_range_assignor:metadata(Topics) end),
+    meck:expect(test_assignor2, assign, fun(Members, TopicPartitions, AssignmentUserData) ->
         kafine_range_assignor:assign(Members, TopicPartitions, AssignmentUserData)
     end),
 
@@ -80,7 +89,7 @@ join_new_group_as_leader() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, undefined},
             assignment_callback => {test_assignment_callback, undefined},
-            assignor => test_assignor
+            assignors => [test_assignor]
         },
         Topics
     ),
@@ -103,8 +112,6 @@ join_new_group_as_leader() ->
     ?assert(meck:called(test_membership_callback, unsubscribe_partitions, '_')),
 
     % Wait until we're the leader.
-    % TODO: If we have multiple group members in the same test, how do we tell them apart here?
-    % TODO: We pass extra telemetry metadata in the options, and it'll come back out later. Useful for other things, too.
     receive
         {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
     end,
@@ -269,7 +276,7 @@ leader_with_new_member() ->
     meck:expect(
         kamock_join_group,
         handle_join_group_request,
-        kamock_join_group:as_leader(?GENERATION_ID_1)
+        kamock_join_group:as_leader(?GROUP_GENERATION_1)
     ),
 
     % TODO: There's quite a lot of shared setup here; can we jump start to 'leader' somehow?
@@ -304,14 +311,14 @@ leader_with_new_member() ->
     meck:expect(
         kamock_join_group,
         handle_join_group_request,
-        kamock_join_group:as_leader(?GENERATION_ID_2)
+        kamock_join_group:as_leader(?GROUP_GENERATION_2)
     ),
 
     % Trigger a rebalance.
     meck:expect(
         kamock_heartbeat,
         handle_heartbeat_request,
-        kamock_heartbeat:expect_generation_id(?GENERATION_ID_2)
+        kamock_heartbeat:expect_generation_id(?GROUP_GENERATION_2)
     ),
 
     % Wait for (another) JoinGroup request.
@@ -498,12 +505,13 @@ setup_not_coordinator(Coordinator = #{node_id := CoordinatorId}) ->
 offset_commit() ->
     % Start mock broker
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
+
     % Start membership
+    Ref = ?REBALANCE_REF,
     TopicName = ?TOPIC_NAME,
     GroupId = ?GROUP_ID,
     Partition = 0,
     CommitOffset = 1,
-    Ref = ?REBALANCE_REF,
     {ok, R} = kafine_eager_rebalance:start_link(
         Ref,
         Broker,
@@ -555,3 +563,94 @@ expected_offset_commit_request(TopicName, Partition, CommitOffset) ->
     ) when T =:= TopicName, P =:= Partition, CO =:= CommitOffset ->
         true
     end.
+
+multiple_assignors() ->
+    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
+        [kafine, rebalance, join_group],
+        [kafine, rebalance, leader]
+    ]),
+
+    {ok, Broker} = kamock_broker:start(?BROKER_REF),
+
+    % By default, we choose the first protocol.
+    meck:expect(
+        kamock_join_group,
+        handle_join_group_request,
+        kamock_join_group:as_leader()
+    ),
+
+    TopicName = ?TOPIC_NAME,
+    GroupId = ?GROUP_ID,
+    {ok, R} = kafine_eager_rebalance:start_link(
+        ?REBALANCE_REF,
+        Broker,
+        #{},
+        GroupId,
+        #{
+            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+            subscription_callback => {test_membership_callback, undefined},
+            assignment_callback => {test_assignment_callback, undefined},
+            assignors => [test_assignor, test_assignor2]
+        },
+        [TopicName]
+    ),
+
+    % Wait for the rebalance to complete.
+    (fun() ->
+        receive
+            {[kafine, rebalance, join_group], TelemetryRef, #{}, #{
+                protocol_name := ProtocolName, group_id := GroupId
+            }} ->
+                ?assertEqual(<<"test">>, ProtocolName)
+        end
+    end)(),
+
+    receive
+        {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
+    end,
+
+    % Check that the correct assignor was called.
+    ?assert(meck:called(test_assignor, assign, '_')),
+    meck:reset(test_assignor),
+
+    % Trigger a rebalance; this time with a different assignor.
+    meck:expect(
+        kamock_join_group,
+        handle_join_group_request,
+        kamock_join_group:as_leader(
+            1,
+            fun(_ProtocolType, _Protocols = [_, Protocol]) ->
+                Protocol
+            end
+        )
+    ),
+
+    meck:expect(
+        kamock_heartbeat,
+        handle_heartbeat_request,
+        kamock_heartbeat:expect_generation_id(1)
+    ),
+
+    % Wait for the rebalance to complete.
+    (fun() ->
+        receive
+            {[kafine, rebalance, join_group], TelemetryRef, #{}, #{
+                protocol_name := ProtocolName, group_id := GroupId
+            }} ->
+                ?assertEqual(<<"test2">>, ProtocolName)
+        end
+    end)(),
+
+    receive
+        {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
+    end,
+
+    % Check that the correct assignor was called.
+    ?assert(not meck:called(test_assignor, assign, '_')),
+    ?assert(meck:called(test_assignor2, assign, '_')),
+
+    telemetry:detach(TelemetryRef),
+
+    kafine_eager_rebalance:stop(R),
+    kamock_broker:stop(Broker),
+    ok.

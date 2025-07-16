@@ -17,11 +17,22 @@ validate_options(Options) ->
 
 default_options() ->
     #{
+        transport => gen_tcp,
+        transport_options => [],
         client_id => ?DEFAULT_CLIENT_ID,
+        connect_timeout => infinity,
         metadata => ?DEFAULT_METADATA
     }.
 
+validate_option(transport, Transport) when Transport =:= gen_tcp; Transport =:= ssl ->
+    ok;
+validate_option(transport_options, _) ->
+    ok;
 validate_option(client_id, Value) when is_binary(Value) ->
+    ok;
+validate_option(connect_timeout, infinity) ->
+    ok;
+validate_option(connect_timeout, Timeout) when is_integer(Timeout) ->
     ok;
 validate_option(metadata, Value) when is_map(Value) ->
     ok;

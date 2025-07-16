@@ -35,6 +35,7 @@ start_link(Ref, Bootstrap, ConnectionOptions, GroupId, MembershipOptions, Topics
         via(Ref),
         ?MODULE,
         [
+            Ref,
             Bootstrap,
             ConnectionOptions,
             GroupId,
@@ -55,7 +56,7 @@ via(Ref) ->
     {via, kafine_via, {?MODULE, Ref}}.
 
 -spec offset_commit(
-    Ref :: ref(), Offsets :: #{kafine:topic() := #{kafine:partition() := kafine:offset()}}
+    Ref :: ref(), Offsets :: #{kafine:topic() => #{kafine:partition() => kafine:offset()}}
 ) -> offset_commit_response:offset_commit_response_3().
 
 offset_commit(Ref, Offsets) ->
@@ -90,20 +91,20 @@ offset_commit(Ref, Offsets) ->
 }).
 
 init([
+    Ref,
     Bootstrap,
     ConnectionOptions,
     GroupId,
     MembershipOptions = #{
         subscription_callback := {SubscriptionCallback, MembershipArgs},
         assignment_callback := {AssignmentCallback, AssignmentArgs},
-        assignor := Assignor
+        assignors := Assignors
     },
     Topics
 ]) ->
     % We trap exits so that we can leave the group on death.
     process_flag(trap_exit, true),
-
-    Assignors = [Assignor],
+    kafine_proc_lib:set_label({?MODULE, Ref, GroupId}),
 
     {ok, SubscriptionState} = SubscriptionCallback:init(MembershipArgs),
     {ok, AssignmentState} = AssignmentCallback:init(AssignmentArgs),
@@ -510,9 +511,11 @@ handle_join_group_response(
         assignors = Assignors
     }
 ) when LeaderId =:= MemberId ->
-    ?LOG_INFO("We are the leader"),
+    ?LOG_INFO("We are the leader with member ID ~p", [MemberId]),
 
-    telemetry:execute([kafine, rebalance, join_group], #{}, #{group_id => GroupId}),
+    telemetry:execute([kafine, rebalance, join_group], #{}, #{
+        protocol_name => ProtocolName, group_id => GroupId
+    }),
 
     {value, Assignor} = lists:search(
         fun(Assignor) ->
@@ -546,9 +549,9 @@ handle_join_group_response(
         generation_id = GenerationId
     },
 
-    % Get the metadata for those topics.
-    {next_state, #leader_sync{assignor = Assignor, members = Members, protocol_name = ProtocolName},
-        StateData2, [{next_event, internal, {metadata, Topics}}]};
+    % Get the metadata for those topics. We use a composite state record, because we only need this information briefly.
+    State2 = #leader_sync{assignor = Assignor, members = Members, protocol_name = ProtocolName},
+    {next_state, State2, StateData2, [{next_event, internal, {metadata, Topics}}]};
 handle_join_group_response(
     #{
         error_code := ?NONE,
@@ -560,7 +563,7 @@ handle_join_group_response(
     _State,
     StateData = #state{member_id = MemberId}
 ) when LeaderId /= MemberId ->
-    ?LOG_INFO("We are a follower"),
+    ?LOG_INFO("We are a follower with member ID ~p", [MemberId]),
     {next_state, follower_sync, StateData#state{generation_id = GenerationId}, [
         {next_event, internal, {sync_group, {ProtocolName, #{}}}}
     ]}.
@@ -573,7 +576,7 @@ handle_metadata_response(
         protocol_name = ProtocolName
     },
     StateData = #state{
-        assignment = #{user_data := AssignmentUserData}
+        assignment = #{user_data := ExistingAssignmentUserData}
     }
 ) ->
     % We want [#{name := topic(), partitions := [non_neg_integer()]}]
@@ -588,7 +591,10 @@ handle_metadata_response(
         TopicPartitions0
     ),
     ?LOG_DEBUG("TopicPartitions = ~p", [TopicPartitions]),
-    Assignments = Assignor:assign(Members, TopicPartitions, AssignmentUserData),
+
+    % Ask the assignor to assign the partitions to the members. It may take advantage of previous user data
+    % (for stickiness, e.g.).
+    Assignments = Assignor:assign(Members, TopicPartitions, ExistingAssignmentUserData),
     ?LOG_DEBUG("Assignments = ~p", [Assignments]),
     {keep_state, StateData, [{next_event, internal, {sync_group, {ProtocolName, Assignments}}}]}.
 
@@ -598,14 +604,15 @@ handle_sync_group_response(
     StateData = #state{
         connection = Connection,
         group_id = GroupId,
+        member_id = MemberId,
         subscription_callback = {SubscriptionCallback, SubscriptionState0},
         assignment_callback = {AssignmentCallback, AssignmentState0},
         membership_options = #{heartbeat_interval_ms := HeartbeatIntervalMs},
         assignment = #{assigned_partitions := PreviousTopicPartitionAssignments}
     }
 ) ->
-    ?LOG_INFO("Leader; synced group ~s; start heartbeating at ~p", [
-        GroupId, HeartbeatIntervalMs
+    ?LOG_INFO("We are the leader with member ID ~p; synced group ~s; start heartbeating at ~p", [
+        MemberId, GroupId, HeartbeatIntervalMs
     ]),
 
     Assignment = kafcod_consumer_protocol:decode_assignment(Assignment0),
@@ -628,6 +635,8 @@ handle_sync_group_response(
 
     telemetry:execute([kafine, rebalance, leader], #{}, #{
         group_id => GroupId,
+        member_id => MemberId,
+        assignment => TopicPartitionAssignments,
         previous_assignment => PreviousTopicPartitionAssignments
     }),
 
@@ -639,14 +648,15 @@ handle_sync_group_response(
     StateData = #state{
         connection = Connection,
         group_id = GroupId,
+        member_id = MemberId,
         subscription_callback = {SubscriptionCallback, SubscriptionState0},
         assignment_callback = {AssignmentCallback, AssignmentState0},
         membership_options = #{heartbeat_interval_ms := HeartbeatIntervalMs},
         assignment = #{assigned_partitions := PreviousTopicPartitionAssignments}
     }
 ) ->
-    ?LOG_INFO("Follower; synced group ~s; start heartbeating at ~p", [
-        GroupId, HeartbeatIntervalMs
+    ?LOG_INFO("We are a follower with member ID ~p; synced group ~s; start heartbeating at ~p", [
+        MemberId, GroupId, HeartbeatIntervalMs
     ]),
 
     Assignment = kafcod_consumer_protocol:decode_assignment(Assignment0),
@@ -668,7 +678,9 @@ handle_sync_group_response(
     },
 
     telemetry:execute([kafine, rebalance, follower], #{}, #{
+        member_id => MemberId,
         group_id => GroupId,
+        assignment => TopicPartitionAssignments,
         previous_assignment => PreviousTopicPartitionAssignments
     }),
 

@@ -21,7 +21,6 @@ name() -> <<"range">>.
 
 %% Topics is the list of topics that we want to subscribe to.
 %% UserData is currently unused.
-%% Kafire uses it to tell all members about everyone's assignments, in case the leader changes.
 %% We assume version 0 of the consumer subscription.
 %% Later versions allow us to specify what we already own, a rack ID, etc.
 metadata(Topics) ->

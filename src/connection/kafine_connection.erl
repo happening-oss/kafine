@@ -63,6 +63,8 @@ stop(Connection) when is_pid(Connection) ->
 -type correlation_id() :: integer().
 -define(INITIAL_CORRELATION_ID, 1).
 
+-type transport_messages() :: {OK :: atom(), Closed :: atom(), Error :: atom(), Passive :: atom()}.
+
 -record(state, {
     % ClientId is sent in the request header for every request. Rather than have the caller specify it every time, we
     % keep it in our state.
@@ -71,8 +73,14 @@ stop(Connection) when is_pid(Connection) ->
     % 'telemetry' metadata.
     metadata :: #{},
 
+    % TCP/TLS transport module.
+    transport :: module(),
+
     % The socket.
     socket :: inet:socket(),
+
+    % TCP/TLS messages.
+    messages :: transport_messages(),
 
     % The next correlation ID. Incrementing integer, starts at one.
     correlation_id :: correlation_id(),
@@ -191,25 +199,22 @@ reqids_new() ->
 reqids_size(ReqIdCollection) ->
     gen_statem:reqids_size(ReqIdCollection).
 
-init([Broker, #{client_id := ClientId, metadata := Metadata0}]) ->
+init([
+    Broker = #{host := Host, port := Port},
+    #{
+        client_id := ClientId,
+        transport := Transport,
+        transport_options := TransportOptions,
+        connect_timeout := ConnectTimeoutMs,
+        metadata := Metadata0
+    }
+]) ->
     Metadata = maps:merge(maps:with([host, port, node_id], Broker), Metadata0),
     logger:set_process_metadata(Metadata),
     kafine_telemetry:put_metadata(Metadata),
     kafine_proc_lib:set_label({?MODULE, maps:get(node_id, Broker, -1)}),
 
-    % Connect asynchronously.
-    {ok, init, no_state, [{next_event, internal, {connect, Broker, ClientId, Metadata}}]}.
-
-callback_mode() ->
-    handle_event_function.
-
-handle_event(
-    internal, {connect, _Broker = #{host := Host, port := Port}, ClientId, Metadata}, init, _
-) ->
-    CorrelationId = ?INITIAL_CORRELATION_ID,
-
-    % TODO: connect timeout.
-    {ok, Socket} = gen_tcp:connect(binary_to_list(Host), Port, [
+    TransportOptions2 = [
         {mode, binary},
         % Kafka messages have a 4-byte size prefix, so we can use {packet,4}. This offloads the buffer management to the
         % C implementation in Erlang/OTP, where it's more efficient.
@@ -217,16 +222,37 @@ handle_event(
         % ...and we get one process message for each Kafka message. We can use {active,true} because we only expect one
         % request to be in flight at a time, so there's no real danger of the process message queue growing unbounded.
         {active, true}
-    ]),
+        | TransportOptions
+    ],
+
+    % Connect synchronously.
+    Messages = transport_messages(Transport),
+    {ok, Socket} = Transport:connect(
+        binary_to_list(Host),
+        Port,
+        TransportOptions2,
+        ConnectTimeoutMs
+    ),
 
     State = #state{
         client_id = ClientId,
         metadata = Metadata,
-        correlation_id = CorrelationId,
+        correlation_id = ?INITIAL_CORRELATION_ID,
+        transport = Transport,
+        messages = Messages,
         socket = Socket,
         pending = #{}
     },
-    {next_state, connected, State};
+    {ok, connected, State}.
+
+transport_messages(gen_tcp) ->
+    {tcp, tcp_closed, tcp_error, tcp_passive};
+transport_messages(ssl) ->
+    {ssl, ssl_closed, ssl_error, ssl_passive}.
+
+callback_mode() ->
+    handle_event_function.
+
 handle_event(
     {call, From},
     _Req = {call, Encoder, Args, Metadata},
@@ -235,12 +261,13 @@ handle_event(
         client_id = ClientId,
         metadata = Metadata0,
         correlation_id = CorrelationId,
+        transport = Transport,
         socket = Socket,
         pending = Pending
     }
 ) ->
     Request = Encoder(Args#{client_id => ClientId, correlation_id => CorrelationId}),
-    ok = gen_tcp:send(Socket, Request),
+    ok = Transport:send(Socket, Request),
 
     telemetry:execute(
         [kafine, connection, tcp, bytes_sent],
@@ -256,9 +283,14 @@ handle_event(
     }};
 handle_event(
     info,
-    {tcp, Socket, Buffer = <<CorrelationId:32/big-signed, _/binary>>},
+    {Tcp, Socket, Buffer = <<CorrelationId:32/big-signed, _/binary>>},
     connected,
-    StateData = #state{socket = Socket, pending = Pending, metadata = Metadata0}
+    StateData = #state{
+        messages = {Tcp, _Closed, _Error, _Passive},
+        socket = Socket,
+        pending = Pending,
+        metadata = Metadata0
+    }
 ) ->
     % Response from the broker. Because we use {packet, 4}, we know it's an entire message.
     {{From, Metadata}, Pending2} = maps:take(CorrelationId, Pending),
@@ -270,6 +302,11 @@ handle_event(
 
     % Note that latency measurements are in the span.
     {next_state, connected, StateData#state{pending = Pending2}, [{reply, From, {ok, Buffer}}]};
-handle_event(info, {tcp_closed, Socket}, _State, _StateData = #state{socket = Socket}) ->
+handle_event(
+    info,
+    {Closed, Socket},
+    _State,
+    _StateData = #state{messages = {_Tcp, Closed, _Error, _Passive}, socket = Socket}
+) ->
     ?LOG_NOTICE("Connection closed"),
     {stop, closed}.

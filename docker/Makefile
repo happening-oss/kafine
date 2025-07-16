@@ -33,7 +33,10 @@ EXTRA_SERVICES ?= zookeeper-extra $(EXTRA_BROKERS)
 
 MONITORING_SERVICES ?= prometheus grafana
 
-up: default-up ui-up
+up: tls-secrets default-up ui-up
+
+tls-secrets:
+	make -C secrets
 
 default-up: docker-compose.yaml jmx
 	docker compose up -d $(DEFAULT_SERVICES)
@@ -69,6 +72,9 @@ rm:
 
 # cargo install hbs-cli; only needed to regenerate the (checked-in) yaml files.
 HBS_CLI := hbs-cli
+
+# alternatively, use node.js; 'cd scripts; npm i' first.
+# HBS_CLI := ./scripts/hbs.js
 
 # Pipe through 'yq' to prettify it.
 # Important: use https://github.com/mikefarah/yq, NOT https://kislyuk.github.io/yq/

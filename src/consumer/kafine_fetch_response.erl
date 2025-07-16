@@ -48,7 +48,7 @@
 }).
 
 -type fold() :: #fold{}.
--type fold_errors() :: #{kafine:error_code() := [{kafine:topic(), kafine:partition()}]}.
+-type fold_errors() :: #{kafine:error_code() => [{kafine:topic(), kafine:partition()}]}.
 
 -spec fold(
     FetchResponse :: fetch_response:fetch_response_11(),
@@ -180,26 +180,19 @@ fold_partition_data(
     Fold0 = #fold{states = States0}
 ) ->
     Metadata = Metadata0#{partition_index => PartitionIndex},
-
     FetchOffset = TopicPartitionState#topic_partition_state.offset,
     ClientPid = TopicPartitionState#topic_partition_state.client_pid,
 
-    {ok, {NextOffset, State2}} = kafine_consumer_callback_process:partition_data(
-        ClientPid, Topic, PartitionData, FetchOffset
-    ),
-    telemetry:execute(
+    Span = kafine_telemetry:start_span(
         [kafine, fetch, partition_data],
-        #{
-            fetch_offset => FetchOffset,
-            next_offset => NextOffset,
-            high_watermark => HighWatermark,
-            lag => HighWatermark - NextOffset
-        },
+        #{fetch_offset => FetchOffset, high_watermark => HighWatermark},
         Metadata
     ),
 
+    ClientPid ! {partition_data, {Topic, PartitionData, FetchOffset, Span}},
+
     TopicPartitionState2 = TopicPartitionState#topic_partition_state{
-        offset = NextOffset, state = State2
+        state = busy
     },
     States = kafine_maps:put([Topic, PartitionIndex], TopicPartitionState2, States0),
     Fold0#fold{states = States}.

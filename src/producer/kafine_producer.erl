@@ -91,8 +91,8 @@ callback_mode() ->
     brokers :: [kafine:broker()],
     connection :: kafine:connection() | undefined,
     connection_options :: kafine:connection_options(),
-    partition_leaders :: #{kafine:topic() := #{kafine:partition() := kafine:node_id()}},
-    node_producers :: #{kafine:node_id() := pid()},
+    partition_leaders :: #{kafine:topic() => #{kafine:partition() => kafine:node_id()}},
+    node_producers :: #{kafine:node_id() => pid()},
     pending :: kafine_node_producer:request_id_collection()
 }).
 
@@ -352,7 +352,7 @@ terminate(
     ok.
 
 -spec get_node_by_id([Node], NodeId :: non_neg_integer()) -> Node when
-    Node :: #{node_id := integer(), host := binary(), port := integer(), _ := _}.
+    Node :: #{node_id := integer(), host := binary(), port := integer()}.
 
 get_node_by_id(Nodes, NodeId) when is_list(Nodes), is_integer(NodeId) ->
     [Node] = [N || N = #{node_id := Id} <- Nodes, Id =:= NodeId],

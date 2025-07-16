@@ -75,6 +75,8 @@ build_fetch_partitions(PartitionStates, Options) ->
         fun
             (PartitionIndex, #topic_partition_state{state = active, offset = Offset}, Acc) ->
                 [build_fetch_partition(PartitionIndex, Offset, Options) | Acc];
+            (_PartitionIndex, #topic_partition_state{state = busy}, Acc) ->
+                Acc;
             (_PartitionIndex, #topic_partition_state{state = paused}, Acc) ->
                 Acc
         end,

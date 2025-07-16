@@ -15,7 +15,7 @@
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
-        fun user_data_is_preserved/0
+        fun assignment_user_data_is_preserved/0
     ]}.
 
 setup() ->
@@ -47,7 +47,7 @@ cleanup(_) ->
     meck:unload(),
     ok.
 
-user_data_is_preserved() ->
+assignment_user_data_is_preserved() ->
     % If the leader gives some user data to a member, and that member is later elected leader, then that user data is
     % passed to the assignor. This allows for stickiness to be communicated between members.
     GroupId = ?GROUP_ID,
@@ -128,7 +128,7 @@ user_data_is_preserved() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, undefined},
             assignment_callback => {test_assignment_callback, undefined},
-            assignor => test_assignor
+            assignors => [test_assignor]
         },
         Topics
     ),
@@ -142,7 +142,7 @@ user_data_is_preserved() ->
             heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
             subscription_callback => {test_membership_callback, undefined},
             assignment_callback => {test_assignment_callback, undefined},
-            assignor => test_assignor
+            assignors => [test_assignor]
         },
         Topics
     ),

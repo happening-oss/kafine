@@ -10,7 +10,7 @@
 %% Given a map of Topic => Partition => Timestamp, build the corresponding request object.
 -spec build_list_offsets_request(
     TopicPartitionTimestamps :: #{
-        kafine:topic() := #{kafine:partition() := kafine:offset_timestamp()}
+        kafine:topic() => #{kafine:partition() => kafine:offset_timestamp()}
     },
     IsolationLevel :: kafine:isolation_level()
 ) -> list_offsets_request:list_offsets_request_5().

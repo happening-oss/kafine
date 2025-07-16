@@ -37,7 +37,7 @@
 -type topic_partitions() :: [#{name := kafine:topic(), partitions := [non_neg_integer()]}].
 
 -type assignments() :: #{
-    member_id() := member_assignment()
+    member_id() => member_assignment()
 }.
 -type member_assignment() :: #{
     % The list of topics and partitions assigned to this member.
@@ -50,7 +50,7 @@
 }.
 
 -type assigned_partitions() :: #{
-    Topic :: binary() := [Partition :: non_neg_integer()]
+    Topic :: binary() => [Partition :: non_neg_integer()]
 }.
 -type user_data() :: opaque_binary().
 -type opaque_binary() :: binary().

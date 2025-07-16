@@ -7,7 +7,6 @@
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
 -define(PARTITION_3, 63).
--define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -20,27 +19,14 @@ all_test_() ->
     ]}.
 
 setup() ->
-    meck:new(test_consumer_callback, [non_strict]),
-    meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
-        {ok, St}
-    end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
-
-    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
-
-    meck:new(kamock_fetch, [passthrough]),
-    meck:new(kamock_partition_data, [passthrough]),
-    meck:new(kamock_metadata_response_partition, [passthrough]),
-    ok.
+    kafine_node_consumer_tests:setup(?MODULE).
 
 cleanup(_) ->
     meck:unload().
 
 subscribe() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
+    {ok, NodeConsumer} = start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -70,14 +56,13 @@ subscribe() ->
      || P <- [?PARTITION_1, ?PARTITION_2]
     ],
 
-    kafine_node_consumer:stop(NodeConsumer),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(NodeConsumer, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 subscribe_more() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
+    {ok, NodeConsumer} = start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -127,14 +112,13 @@ subscribe_more() ->
      || P <- [?PARTITION_1, ?PARTITION_2, ?PARTITION_3]
     ],
 
-    kafine_node_consumer:stop(NodeConsumer),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(NodeConsumer, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 unsubscribe() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
+    {ok, NodeConsumer} = start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -163,6 +147,10 @@ unsubscribe() ->
         )
      || P <- [?PARTITION_1, ?PARTITION_2]
     ],
+
+    % There's a small race condition here where unsubscribe can happen before 'continue' is called; fix it by waiting
+    % for 'continue'.
+    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
 
     % ^^ this is the same as the previous test; now we unsubscribe from one of the partitions.
     kafine_node_consumer:unsubscribe(NodeConsumer, #{TopicName => [?PARTITION_1]}),
@@ -196,14 +184,13 @@ unsubscribe() ->
     timer:sleep(75),
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
-    kafine_node_consumer:stop(NodeConsumer),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(NodeConsumer, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 unsubscribe_all() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
+    {ok, NodeConsumer} = start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -239,8 +226,7 @@ unsubscribe_all() ->
     timer:sleep(75),
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
 
-    kafine_node_consumer:stop(NodeConsumer),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(NodeConsumer, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -249,7 +235,7 @@ unsubscribe_unknown() ->
     % just to be annoying, we'll mix this up by subscribing to two partitions, then unsubscribing from one of those,
     % plus one unknown.
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, NodeConsumer} = kafine_node_consumer_tests:start_node_consumer(?CONSUMER_REF, Broker),
+    {ok, NodeConsumer} = start_node_consumer(?CONSUMER_REF, Broker),
 
     % We should be in the 'idle' state -- we've got nothing to do, so we don't bother issuing empty fetches.
     ?assertMatch({idle, _}, sys:get_state(NodeConsumer)),
@@ -290,13 +276,15 @@ unsubscribe_unknown() ->
         kafine_node_consumer:info(NodeConsumer)
     ),
 
-    kafine_node_consumer:stop(NodeConsumer),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(NodeConsumer, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
 init_topic_partition_states(InitStates) ->
     kafine_fetch_response_tests:init_topic_partition_states(InitStates).
 
-cleanup_topic_partition_states(TopicPartitionStates) ->
-    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
+start_node_consumer(Ref, Broker) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker).
+
+stop_node_consumer(Pid, TopicPartitionStates) ->
+    kafine_node_consumer_tests:stop_node_consumer(Pid, TopicPartitionStates).

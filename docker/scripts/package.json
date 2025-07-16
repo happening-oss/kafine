@@ -1,0 +1,12 @@
+{
+  "name": "hbs",
+  "version": "1.0.0",
+  "main": "hbs.js",
+  "author": "Happening",
+  "license": "MIT",
+  "description": "Simple handlebars CLI",
+  "dependencies": {
+    "handlebars": "^4.7.8",
+    "yaml": "^2.8.0"
+  }
+}

@@ -8,7 +8,11 @@
     span/3,
 
     start_span/2,
+    start_span/3,
+
     stop_span/2,
+    stop_span/4,
+
     span_exception/4,
     span_exception/5,
 
@@ -31,16 +35,7 @@ put_metadata(Metadata) when is_map(Metadata) ->
     ok.
 
 get_metadata(Pid) when is_pid(Pid) ->
-    try
-        case process_info(Pid, {dictionary, ?TELEMETRY_KEY}) of
-            {_, Metadata} -> Metadata;
-            _ -> #{}
-        end
-    catch
-        error:badarg ->
-            {dictionary, D} = process_info(Pid, dictionary),
-            proplists:get_value(?TELEMETRY_KEY, D, #{})
-    end.
+    kafine_proc_lib:get_dictionary(Pid, ?TELEMETRY_KEY, #{}).
 
 -type span_function(SpanResult) :: fun(() -> {SpanResult, telemetry:event_metadata()}).
 
@@ -64,29 +59,49 @@ delete_type_(Value) ->
 ) ->
     span().
 
-start_span(EventPrefix, StartMetadata) ->
+start_span(EventPrefix, Metadata) ->
+    start_span(EventPrefix, #{}, Metadata).
+
+start_span(EventPrefix, Measurements, Metadata) ->
     StartTime = erlang:monotonic_time(),
     DefaultCtx = erlang:make_ref(),
-    Measurements = #{monotonic_time => StartTime, system_time => erlang:system_time()},
-    Metadata = merge_ctx(StartMetadata, DefaultCtx),
+    Measurements2 = maps:merge(Measurements, #{
+        monotonic_time => StartTime, system_time => erlang:system_time()
+    }),
+    Metadata2 = merge_ctx(Metadata, DefaultCtx),
     telemetry:execute(
         EventPrefix ++ [start],
-        Measurements,
-        Metadata
+        Measurements2,
+        Metadata2
     ),
-    {Measurements, Metadata}.
+    {Measurements2, Metadata2}.
 
 -spec stop_span(EventPrefix :: telemetry:event_prefix(), Span :: span()) -> ok.
 
 stop_span(
-    EventPrefix, _Span = {Measurements, Metadata}
+    EventPrefix, Span = {_Measurements0, _Metadata0}
 ) ->
-    #{monotonic_time := StartTime} = Measurements,
+    stop_span(EventPrefix, Span, #{}, #{}).
+
+-spec stop_span(
+    EventPrefix :: telemetry:event_prefix(),
+    Span :: span(),
+    Measurements :: telemetry:event_measurements(),
+    Metadata :: telemetry:event_metadata()
+) -> ok.
+
+stop_span(
+    EventPrefix, _Span = {Measurements0, Metadata0}, Measurements, Metadata
+) ->
+    #{monotonic_time := StartTime} = Measurements0,
     StopTime = erlang:monotonic_time(),
-    StopMetadata = Metadata,
+    StopMetadata = maps:merge(Metadata0, Metadata),
+    StopMeasurements = maps:merge(Measurements0, Measurements#{
+        duration => StopTime - StartTime, monotonic_time => StopTime
+    }),
     telemetry:execute(
         EventPrefix ++ [stop],
-        #{duration => StopTime - StartTime, monotonic_time => StopTime},
+        StopMeasurements,
         StopMetadata#{}
     ).
 

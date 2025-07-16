@@ -9,6 +9,7 @@ setup() ->
     {ok, _} = application:ensure_all_started(telemetry),
     meck:new(gen_tcp, [unstick]),
     meck:expect(gen_tcp, connect, fun(_Host, _Port, _Opts) -> {ok, ?SOCKET} end),
+    meck:expect(gen_tcp, connect, fun(_Host, _Port, _Opts, _Timeout) -> {ok, ?SOCKET} end),
     meck:expect(gen_tcp, send, fun(_Socket, _Request) -> ok end),
     ok.
 

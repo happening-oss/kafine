@@ -85,9 +85,10 @@ Kafine by default appends `host`, `port` and `node_id` to the `metadata`.
 ?DOC("""
 Used when starting a group consumer.
 
-- `assignor`: A module that implements the `m:kafine_assignor` behaviour.
+- `assignors`: A list of modules that implement the `m:kafine_assignor` behaviour.
   The consumer group leader uses it to assign topics and partitions to members of the consumer group.
-  Use, e.g., `m:kafine_range_assignor`.
+  If multiple assignors use the same protocol name then the module first in the list will be used.
+  Use, e.g., `[kafine_range_assignor]`.
 - `assignment_callback`: A tuple of `{Module, Args}`.
   Advanced use only; leave it unset to use the recommended default.
   The module is expected to implement the `m:kafine_assignment_callback` behaviour.
@@ -100,7 +101,7 @@ Used when starting a group consumer.
   See the Kafka documentation for `heartbeat.interval.ms`, etc., for details.
 """).
 -type membership_options() :: #{
-    assignor => module(),
+    assignors => [module()],
     assignment_callback := {module(), term()},
     subscription_callback => {module(), term()},
     heartbeat_interval_ms => non_neg_integer(),
@@ -170,7 +171,7 @@ Start a simple consumer for one or more topics.
     SubscriberOptions :: subscriber_options(),
     ConsumerCallback :: {CallbackModule :: module(), CallbackArgs :: term()},
     Topics :: [topic()],
-    TopicOptions :: #{topic() := topic_options()}
+    TopicOptions :: #{topic() => topic_options()}
 ) -> start_topic_consumer_ret().
 
 start_topic_consumer(
@@ -243,7 +244,7 @@ Start a member of a consumer group.
     ConsumerOptions :: kafine:consumer_options(),
     ConsumerCallback :: {module(), term()},
     Topics :: [kafine:topic()],
-    TopicOptions :: #{topic() := topic_options()}
+    TopicOptions :: #{topic() => topic_options()}
 ) -> start_group_consumer_ret().
 
 start_group_consumer(

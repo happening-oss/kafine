@@ -19,10 +19,16 @@ services:
       - KAFKA_BROKER_ID=101
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-101:29090,PLAINTEXT://0.0.0.0:9092
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-101:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9092
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-101:29090,PLAINTEXT://0.0.0.0:9092,SSL://0.0.0.0:9192
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-101:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9092,SSL://${EXTERNAL_LISTENER_ADDR}:9192
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-101.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-101_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-101.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-101_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-101_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-a
@@ -47,8 +53,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9092:9092"
+      - "9192:9192"
   kafka-default-102:
     container_name: kafka-default-102
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -58,10 +66,16 @@ services:
       - KAFKA_BROKER_ID=102
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-102:29090,PLAINTEXT://0.0.0.0:9093
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-102:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9093
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-102:29090,PLAINTEXT://0.0.0.0:9093,SSL://0.0.0.0:9193
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-102:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9093,SSL://${EXTERNAL_LISTENER_ADDR}:9193
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-102.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-102_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-102.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-102_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-102_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-b
@@ -86,8 +100,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9093:9093"
+      - "9193:9193"
   kafka-default-103:
     container_name: kafka-default-103
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -97,10 +113,16 @@ services:
       - KAFKA_BROKER_ID=103
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-103:29090,PLAINTEXT://0.0.0.0:9094
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-103:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9094
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-103:29090,PLAINTEXT://0.0.0.0:9094,SSL://0.0.0.0:9194
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-103:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9094,SSL://${EXTERNAL_LISTENER_ADDR}:9194
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-103.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-103_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-103.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-103_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-103_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-c
@@ -125,8 +147,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9094:9094"
+      - "9194:9194"
   kafka-default-104:
     container_name: kafka-default-104
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -136,10 +160,16 @@ services:
       - KAFKA_BROKER_ID=104
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-104:29090,PLAINTEXT://0.0.0.0:9095
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-104:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9095
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-104:29090,PLAINTEXT://0.0.0.0:9095,SSL://0.0.0.0:9195
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-104:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9095,SSL://${EXTERNAL_LISTENER_ADDR}:9195
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-104.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-104_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-104.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-104_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-104_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-a
@@ -164,8 +194,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9095:9095"
+      - "9195:9195"
   kafka-default-105:
     container_name: kafka-default-105
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -175,10 +207,16 @@ services:
       - KAFKA_BROKER_ID=105
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-105:29090,PLAINTEXT://0.0.0.0:9096
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-105:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9096
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-105:29090,PLAINTEXT://0.0.0.0:9096,SSL://0.0.0.0:9196
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-105:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9096,SSL://${EXTERNAL_LISTENER_ADDR}:9196
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-105.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-105_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-105.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-105_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-105_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-b
@@ -203,8 +241,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9096:9096"
+      - "9196:9196"
   kafka-default-106:
     container_name: kafka-default-106
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -214,10 +254,16 @@ services:
       - KAFKA_BROKER_ID=106
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-default-106:29090,PLAINTEXT://0.0.0.0:9097
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-106:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9097
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-default-106:29090,PLAINTEXT://0.0.0.0:9097,SSL://0.0.0.0:9197
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-default-106:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9097,SSL://${EXTERNAL_LISTENER_ADDR}:9197
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-default-106.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-default-106_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-default-106.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-default-106_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-default-106_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-c
@@ -242,8 +288,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "9097:9097"
+      - "9197:9197"
   zookeeper-extra:
     container_name: zookeeper-extra
     image: confluentinc/cp-zookeeper:${CP_ZOOKEEPER_VERSION}
@@ -262,10 +310,16 @@ services:
       - KAFKA_BROKER_ID=201
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-extra-201:29090,PLAINTEXT://0.0.0.0:9192
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-201:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9192
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-extra-201:29090,PLAINTEXT://0.0.0.0:9292,SSL://0.0.0.0:9392
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-201:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9292,SSL://${EXTERNAL_LISTENER_ADDR}:9392
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-extra-201.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-extra-201_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-extra-201.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-extra-201_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-extra-201_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-c
@@ -290,8 +344,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
-      - "9192:9192"
+      - "9292:9292"
+      - "9392:9392"
   kafka-extra-202:
     container_name: kafka-extra-202
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -301,10 +357,16 @@ services:
       - KAFKA_BROKER_ID=202
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-extra-202:29090,PLAINTEXT://0.0.0.0:9193
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-202:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9193
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-extra-202:29090,PLAINTEXT://0.0.0.0:9293,SSL://0.0.0.0:9393
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-202:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9293,SSL://${EXTERNAL_LISTENER_ADDR}:9393
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-extra-202.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-extra-202_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-extra-202.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-extra-202_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-extra-202_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-c
@@ -329,8 +391,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
-      - "9193:9193"
+      - "9293:9293"
+      - "9393:9393"
   kafka-extra-203:
     container_name: kafka-extra-203
     image: confluentinc/cp-kafka:${CP_KAFKA_VERSION}
@@ -340,10 +404,16 @@ services:
       - KAFKA_BROKER_ID=203
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-extra-203:29090,PLAINTEXT://0.0.0.0:9194
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-203:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9194
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-extra-203:29090,PLAINTEXT://0.0.0.0:9294,SSL://0.0.0.0:9394
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-extra-203:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:9294,SSL://${EXTERNAL_LISTENER_ADDR}:9394
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-extra-203.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-extra-203_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-extra-203.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-extra-203_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-extra-203_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK=rack-c
@@ -368,8 +438,10 @@ services:
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
-      - "9194:9194"
+      - "9294:9294"
+      - "9394:9394"
   kafka-ui:
     container_name: kafka-ui
     image: ghcr.io/kafbat/kafka-ui:v1.2.0
@@ -381,14 +453,14 @@ services:
       - ./kafka-ui.yaml:/kafka-ui.yaml
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:v3.2.1
+    image: prom/prometheus:v3.4.2
     ports:
       - "9090:9090"
     volumes:
       - ./prometheus.yml~:/etc/prometheus/prometheus.yml
   grafana:
     container_name: grafana
-    image: grafana/grafana:11.6.1
+    image: grafana/grafana:12.0.2
     ports:
       - "3000:3000"
     environment:

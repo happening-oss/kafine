@@ -34,10 +34,16 @@ services:
       - KAFKA_BROKER_ID={{id}}
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://0.0.0.0:{{port}}
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:{{port}}
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      - KAFKA_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://0.0.0.0:{{port}},SSL://0.0.0.0:{{ssl_port}}
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:{{port}},SSL://${EXTERNAL_LISTENER_ADDR}:{{ssl_port}}
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
+      - KAFKA_SSL_CLIENT_AUTH=required
+      - KAFKA_SSL_KEYSTORE_FILENAME=kafka-{{../name}}-{{id}}.keystore.jks
+      - KAFKA_SSL_KEYSTORE_CREDENTIALS=kafka-{{../name}}-{{id}}_keystore_creds
+      - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-{{../name}}-{{id}}.truststore.jks
+      - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-{{../name}}-{{id}}_truststore_creds
+      - KAFKA_SSL_KEY_CREDENTIALS=kafka-{{../name}}-{{id}}_sslkey_creds
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK={{rack}}
@@ -63,8 +69,10 @@ services:
       {{/if}}
     volumes:
       - ./jmx_prometheus:/home/prometheus
+      - ./secrets:/etc/kafka/secrets
     ports:
       - "{{port}}:{{port}}"
+      - "{{ssl_port}}:{{ssl_port}}"
   {{/each}}
 {{/each}}
 
@@ -81,7 +89,7 @@ services:
   {{#if monitoring_enabled}}
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:v3.2.1
+    image: prom/prometheus:v3.4.2
     ports:
       - "9090:9090"
     volumes:
@@ -89,7 +97,7 @@ services:
 
   grafana:
     container_name: grafana
-    image: grafana/grafana:11.6.1
+    image: grafana/grafana:12.0.2
     ports:
       - "3000:3000"
     environment:

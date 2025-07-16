@@ -11,7 +11,9 @@
     unsubscribe_all/1,
 
     resume/3,
-    resume/4
+    resume/4,
+
+    continue/6
 ]).
 -behaviour(gen_statem).
 -export([
@@ -81,6 +83,9 @@ resume(Pid, Topic, Partition) ->
 resume(Pid, Topic, Partition, Offset) ->
     call(Pid, {resume, {Topic, Partition, Offset}}).
 
+continue(Pid, Topic, Partition, NextOffset, NextState, Span) ->
+    call(Pid, {continue, {Topic, Partition, NextOffset, NextState, Span}}).
+
 call(Pid, Request) ->
     gen_statem:call(Pid, Request).
 
@@ -95,7 +100,7 @@ callback_mode() ->
 
     consumer_options :: kafine:consumer_options(),
 
-    topic_options :: #{kafine:topic() := kafine:topic_options()},
+    topic_options :: #{kafine:topic() => kafine:topic_options()},
     topic_partition_states :: kafine_consumer:topic_partition_states(),
     subscribe_epoch :: non_neg_integer(),
 
@@ -254,6 +259,33 @@ handle_event(
             reply_and_continue(State, StateData2, {reply, From, ok})
     end;
 handle_event(
+    {call, From},
+    {continue, {Topic, Partition, NextOffset, NextState, Span}},
+    State,
+    StateData = #state{topic_partition_states = TopicPartitionStates}
+) ->
+    case kafine_maps:get([Topic, Partition], TopicPartitionStates, undefined) of
+        undefined ->
+            % Bad (Topic, Partition) key; we unsubscribed; ignore it.
+            reply_and_continue(State, StateData, {reply, From, ok});
+        _ ->
+            % Found it; update it.
+            TopicPartitionStates2 = kafine_maps:update_with(
+                [Topic, Partition],
+                fun(PartitionState = #topic_partition_state{}) ->
+                    kafine_telemetry:stop_span(
+                        [kafine, fetch, partition_data], Span, #{next_offset => NextOffset}, #{}
+                    ),
+                    PartitionState#topic_partition_state{state = NextState, offset = NextOffset}
+                end,
+                TopicPartitionStates
+            ),
+            StateData2 = StateData#state{
+                topic_partition_states = TopicPartitionStates2
+            },
+            reply_and_continue(State, StateData2, {reply, From, ok})
+    end;
+handle_event(
     internal,
     fetch,
     _State = active,
@@ -378,8 +410,9 @@ handle_info(
     StateData2 = StateData#state{connection = undefined},
     telemetry:execute([kafine, node_consumer, disconnected], #{}, Metadata),
     {next_state, disconnected, StateData2, [{next_event, internal, connect}]};
-handle_info(_Info, _State, _StateData) ->
+handle_info(Info, _State, _StateData) ->
     % Normal info message; ignore it.
+    ?LOG_WARNING("Ignoring ~p", [Info]),
     keep_state_and_data.
 
 handle_response(
@@ -491,14 +524,21 @@ need_offsets(TopicPartitionStates) ->
                         Acc2;
                     (
                         _PartitionIndex,
-                        _PartitionState = #topic_partition_state{offset = Offset},
+                        _PartitionState = #topic_partition_state{state = busy},
+                        Acc2
+                    ) ->
+                        % Busy; not needed.
+                        Acc2;
+                    (
+                        _PartitionIndex,
+                        _PartitionState = #topic_partition_state{state = active, offset = Offset},
                         Acc2
                     ) when is_integer(Offset), Offset >= 0 ->
                         % Offset is a positive integer; continue.
                         Acc2;
                     (
                         PartitionIndex,
-                        _PartitionState = #topic_partition_state{offset = Offset},
+                        _PartitionState = #topic_partition_state{state = active, offset = Offset},
                         Acc2
                     ) ->
                         % Offset is something else (e.g. 'earliest'); we need to convert it to a real offset.

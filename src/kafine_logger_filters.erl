@@ -3,12 +3,12 @@
 
 ?MODULEDOC("""
 Filters to use with Logger.
-
-When the connection to the broker is dropped, Erlang reports this as an error. By using this logger filter, you can
-stop (or downgrade) the logging.
 """).
 
--export([connection_errors/2]).
+-export([
+    connection_errors/2,
+    module_level/2
+]).
 
 ?DOC("""
 This filter provides a way to suppress or downgrade errors caused by `kafine_connection` crashing.
@@ -68,3 +68,12 @@ apply_filter(_LogEvent, _Options = stop) ->
     stop;
 apply_filter(_LogEvent, _Options) ->
     ignore.
+
+module_level(LogEvent = #{meta := #{mfa := {Module, _, _}}}, _Options = {Level, Modules}) ->
+    case lists:member(Module, Modules) of
+        true when Level =/= none -> LogEvent#{level := Level};
+        true -> stop;
+        false -> ignore
+    end;
+module_level(LogEvent, _Options) ->
+    LogEvent.

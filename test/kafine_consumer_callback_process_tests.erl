@@ -1,11 +1,13 @@
 -module(kafine_consumer_callback_process_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("assert_meck.hrl").
 
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION, 61).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, undefined).
+-define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
@@ -22,6 +24,12 @@ setup() ->
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
+    meck:expect(kafine_consumer, continue, fun(
+        _Ref, _Topic, _Partition, _NextOffset, _NextState, _Span
+    ) ->
+        ok
+    end),
+    meck:expect(kafine_consumer, unsubscribe, fun(_Ref, _U) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -46,17 +54,21 @@ state_updates() ->
         FetchResponse
     ),
 
-    {ok, {NextOffset, NextState}} = kafine_consumer_callback_process:partition_data(
-        Pid, ?TOPIC_NAME, PartitionData, FetchOffset
-    ),
+    Span = {#{}, #{}},
+    Pid ! {partition_data, {?TOPIC_NAME, PartitionData, FetchOffset, Span}},
+
+    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
 
     % There are three records in the batch (see canned_fetch_response_single_batch/0). If we started at FetchOffset = 3,
     % then NextOffset = 6.
-    ?assertEqual(6, NextOffset),
-    ?assertEqual(paused, NextState),
+    ?assertCalled(kafine_consumer, continue, ['_', '_', '_', 6, paused, '_']),
+
     % We assert that the callback state was updated (the records were counted). This couples us to the internal state of
     % kafine_consumer_callback_process, but I can live with that for now.
-    ?assertEqual({state, test_consumer_callback, 3}, sys:get_state(Pid)),
+    ?assertEqual(
+        {state, ?CONSUMER_REF, ?TOPIC_NAME, ?PARTITION, test_consumer_callback, 3},
+        sys:get_state(Pid)
+    ),
 
     kafine_consumer_callback_process:stop(Pid),
     ok.

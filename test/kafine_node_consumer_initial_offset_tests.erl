@@ -4,24 +4,11 @@
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(PARTITION_1, 61).
 
 setup() ->
-    meck:new(test_consumer_callback, [non_strict]),
-    meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
-        {ok, St}
-    end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
-
-    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
-
-    meck:new(kamock_list_offsets, [passthrough]),
-    meck:new(kamock_fetch, [passthrough]),
-    ok.
+    kafine_node_consumer_tests:setup(?MODULE).
 
 cleanup(_) ->
     meck:unload().
@@ -96,8 +83,7 @@ earliest() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -135,8 +121,7 @@ latest() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -201,8 +186,7 @@ resume_paused() ->
 
     telemetry:detach(TelemetryRef),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -242,8 +226,7 @@ negative_in_range() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -295,8 +278,7 @@ negative_before_first() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -336,8 +318,7 @@ negative_before_zero() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
 
@@ -377,16 +358,15 @@ negative_one() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    kafine_node_consumer:stop(Pid),
-    cleanup_topic_partition_states(TopicPartitionStates),
+    stop_node_consumer(Pid, TopicPartitionStates),
     kamock_broker:stop(Broker),
     ok.
-
-start_node_consumer(Ref, Broker, TopicPartitionStates) ->
-    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
 
 init_topic_partition_states(InitStates) ->
     kafine_fetch_response_tests:init_topic_partition_states(InitStates).
 
-cleanup_topic_partition_states(TopicPartitionStates) ->
-    kafine_fetch_response_tests:cleanup_topic_partition_states(TopicPartitionStates).
+start_node_consumer(Ref, Broker, TopicPartitionStates) ->
+    kafine_node_consumer_tests:start_node_consumer(Ref, Broker, TopicPartitionStates).
+
+stop_node_consumer(Pid, TopicPartitionStates) ->
+    kafine_node_consumer_tests:stop_node_consumer(Pid, TopicPartitionStates).

@@ -39,7 +39,7 @@ coordinator. This request contains a list of `(MemberId, ConsumerProtocolAssignm
 `ConsumerProtocolAssignment` object is a list of topics and partitions, and it also contains an opaque `user_data`
 field.
 
-This is _not_ the same user data as in the metadata. Since it's sent from the leader to each member (and it can be
+This is _not_ the same user data as in the metadata. It's sent from the leader to each member (and it can be
 different for each member).
 
 It could be used, for example, to implement "warm-spare" scaling: you could give the same topics and partitions to more

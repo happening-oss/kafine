@@ -7,16 +7,16 @@ PROJECT_VERSION = $(shell $(PROJECT_ROOT_DIR)scripts/git-vsn)
 compile:
 	rebar3 compile
 
-dialyzer:
-	rebar3 dialyzer
-
 eunit:
 	rebar3 do eunit --cover, cover, covertool generate
 
-.PHONY: integration
+lint:
+	rebar3 lint
 
-integration:
-	rebar3 as integration do ct
+elvis: lint
+
+dialyzer:
+	rebar3 dialyzer
 
 eqwalize:: compile
 
@@ -25,7 +25,15 @@ ex_doc:
 
 include eqwalizer.mk
 
-all: compile eunit dialyzer eqwalize ex_doc
+all: compile eunit lint dialyzer eqwalize ex_doc
+
+# CI actually uses individual rebar3 steps, but your muscle memory probably appreciates this:
+ci: all
+
+.PHONY: integration
+
+integration:
+	rebar3 as integration do ct
 
 GNU_TAR ?= gtar
 ARCHIVE := ../kafine-$(PROJECT_VERSION).tar

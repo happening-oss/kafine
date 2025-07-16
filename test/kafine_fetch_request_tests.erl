@@ -67,11 +67,12 @@ active_test() ->
         kafine_fetch_request:build_fetch_request(TopicPartitionStates, Options)
     ).
 
-paused_test() ->
+paused_busy_test() ->
     TopicPartitionStates = #{
         <<"topic">> => #{
             61 => #topic_partition_state{state = active, offset = 0},
-            62 => #topic_partition_state{state = paused, offset = 0}
+            62 => #topic_partition_state{state = paused, offset = 0},
+            63 => #topic_partition_state{state = busy, offset = 0}
         }
     },
     Options = default_options(),
