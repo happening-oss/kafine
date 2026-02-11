@@ -3,6 +3,7 @@
 -export([
     get/2,
     get/3,
+    is_key/2,
     put/3,
     remove/2,
     take/2,
@@ -34,6 +35,16 @@ get_([Key], Map, Default) ->
     maps:get(Key, Map, Default);
 get_([Key | Keys], Map1, Default) ->
     get_(Keys, maps:get(Key, Map1, #{}), Default).
+
+is_key(Keys, Map) when is_list(Keys), is_map(Map) ->
+    is_key_(Keys, Map);
+is_key(Keys, Map) ->
+    error(badarg, [Keys, Map]).
+
+is_key_([Key], Map) ->
+    maps:is_key(Key, Map);
+is_key_([Key | Keys], Map) ->
+    is_key_(Keys, maps:get(Key, Map, #{})).
 
 put(Keys, Value, Map) when is_list(Keys), is_map(Map) ->
     update_with_(Keys, fun(_) -> Value end, Value, Map).
@@ -67,10 +78,12 @@ remove_result_(Key, Inner2, Outer) ->
 take(Keys, Map) when is_list(Keys), is_map(Map) ->
     take_(Keys, Map).
 
+take_(_, Map) when Map =:= #{} ->
+    error;
 take_([Key], Map) ->
     maps:take(Key, Map);
 take_([Key | Keys], Outer) ->
-    Inner = maps:get(Key, Outer),
+    Inner = maps:get(Key, Outer, #{}),
     take_result_(Key, take_(Keys, Inner), Outer).
 
 take_result_(Key, {Value, Inner2}, Outer) when Inner2 =:= #{} ->

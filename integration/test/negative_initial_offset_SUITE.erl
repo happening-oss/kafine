@@ -23,6 +23,7 @@ suite() ->
         io_lib:format("~s_~s_~s", [?MODULE, ?FUNCTION_NAME, base64url:encode(rand:bytes(6))])
     )
 ).
+-define(FETCHER_METADATA, #{}).
 
 parse_broker(Broker) when is_list(Broker) ->
     [Host, Port] = string:split(Broker, ":"),
@@ -42,9 +43,13 @@ against_new_topic(_Config) ->
         #{client_id => ?CLIENT_ID},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}},
+        ?FETCHER_METADATA
     ),
 
     % Produce a message.
@@ -72,9 +77,13 @@ against_topic_with_one_message(_Config) ->
         #{client_id => ?CLIENT_ID},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}},
+        ?FETCHER_METADATA
     ),
 
     eventually:assert(records_received(), contains_only_record(Key1)),
@@ -138,9 +147,14 @@ against_empty_non_zero_offset_topic(_Config) ->
         #{client_id => ?CLIENT_ID},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self(),
+            skip_empty_fetches => after_first
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => -1, offset_reset_policy => latest}},
+        ?FETCHER_METADATA
     ),
 
     % We should get OFFSET_OUT_OF_RANGE, then restart from latest. We should get no messages, but we should get an empty

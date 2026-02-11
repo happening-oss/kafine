@@ -1,0 +1,5 @@
+-ifdef(TEST).
+-define(DYNAMIC_CAST(T), eqwalizer:dynamic_cast(T)).
+-else.
+-define(DYNAMIC_CAST(T), T).
+-endif.

@@ -13,6 +13,18 @@ init([]) ->
         {{one_for_one, 1, 5}, [
             #{
                 id => kafine_consumer_sup_sup,
-                start => {kafine_consumer_sup_sup, start_link, []}
+                start => {kafine_consumer_sup_sup, start_link, []},
+                restart => permanent,
+                shutdown => infinity,
+                type => supervisor,
+                modules => [kafine_consumer_sup_sup]
+            },
+            #{
+                id => kafine_producer_sup_sup,
+                start => {kafine_producer_sup_sup, start_link, []},
+                restart => permanent,
+                shutdown => infinity,
+                type => supervisor,
+                modules => [kafine_producer_sup_sup]
             }
         ]}}.

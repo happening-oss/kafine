@@ -2,7 +2,6 @@
 -export_type([
     metadata/0,
     member/0,
-    topic_partitions/0,
     assignments/0,
     member_assignment/0,
     user_data/0
@@ -25,7 +24,7 @@
 % Assignor:assign is called by the leader to assign the group members to the specified topics and partitions.
 -callback assign(
     Members :: [member()],
-    TopicPartitions :: topic_partitions(),
+    TopicPartitions :: kafine_topic_partitions:t(),
     AssignmentUserData :: user_data()
 ) -> assignments().
 
@@ -33,8 +32,6 @@
 -type member() :: #{
     member_id := member_id(), group_instance_id := binary() | null, metadata := metadata()
 }.
-
--type topic_partitions() :: [#{name := kafine:topic(), partitions := [non_neg_integer()]}].
 
 -type assignments() :: #{
     member_id() => member_assignment()
@@ -49,8 +46,6 @@
     user_data := user_data()
 }.
 
--type assigned_partitions() :: #{
-    Topic :: binary() => [Partition :: non_neg_integer()]
-}.
--type user_data() :: opaque_binary().
+-type assigned_partitions() :: kafine_topic_partitions:t().
+-type user_data() :: opaque_binary() | null.
 -type opaque_binary() :: binary().

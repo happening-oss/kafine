@@ -3,10 +3,15 @@
 
 -include_lib("kafcod/include/error_code.hrl").
 
+-include("assert_meck.hrl").
+
 -define(CLUSTER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, {state, ?MODULE}).
+-define(CONNECTION_OPTIONS, kafine_connection_options:validate_options(#{})).
+-define(CONSUMER_OPTIONS, kafine_consumer_options:validate_options(#{})).
+-define(TOPIC_OPTIONS, kafine_topic_options:validate_options([?TOPIC_NAME], #{})).
+-define(FETCHER_METADATA, #{}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -15,13 +20,8 @@ setup() ->
     meck:new(kamock_partition_data, [passthrough]),
     meck:new(kamock_metadata_response_partition, [passthrough]),
 
-    meck:new(test_consumer_callback, [non_strict]),
-    meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
-        {ok, St}
-    end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+    meck:new(test_fetcher_callback, [non_strict]),
+    meck:expect(test_fetcher_callback, handle_partition_data, fun(_A, _T, _P, _O, _U) -> ok end),
     ok.
 
 cleanup(_) ->
@@ -97,22 +97,21 @@ not_leader_or_follower() ->
         end
     ),
 
-    {ok, Consumer} = kafine_consumer:start_link(
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Bootstrap, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
         ?CONSUMER_REF,
-        Bootstrap,
-        #{},
-        {test_consumer_callback, undefined},
-        #{}
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        ?TOPIC_OPTIONS,
+        ?FETCHER_METADATA
     ),
 
-    Subscription = #{
-        TopicName => {#{}, #{P => 0 || P <- Partitions}}
-    },
-
-    ok = kafine_consumer:subscribe(Consumer, Subscription),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => Partitions}),
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
 
     % We expect 2 fetch requests: a failing one and then a successful one.
-    meck:wait(2, kamock_fetch, handle_fetch_request, '_', ?WAIT_TIMEOUT_MS),
+    ?assertWait(2, kamock_fetch, handle_fetch_request, '_', ?WAIT_TIMEOUT_MS),
 
     [
         % First fetch request: all partitions, node 101, return ?NOT_LEADER_OR_FOLLOWER
@@ -134,12 +133,14 @@ not_leader_or_follower() ->
     assert_fetch_request_node(102, FetchArgs2),
     assert_fetch_reply_all_partitions_error(?NONE, FetchRet2),
 
-    % There should be 2 connections to node 101 (bootstrap and node consumer) and 1 connection to node 102 (node consumer).
-    assert_active_connections(2, 101, Brokers),
+    % There should Still be a bootstrap connection to node 101
+    assert_active_connections(1, 101, Brokers),
     assert_active_connections(1, 102, Brokers),
     assert_active_connections(0, 103, Brokers),
 
-    kafine_consumer:stop(Consumer),
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_cluster:stop(Cluster),
     ok.
 
@@ -154,41 +155,42 @@ partitions_move_repeatedly() ->
     reassign_partitions(#{0 => 101, 1 => 102, 2 => 103, 3 => 101}, NodeIds),
 
     % Start the consumer.
-    {ok, Consumer} = kafine_consumer:start_link(
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Bootstrap, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
         ?CONSUMER_REF,
-        Bootstrap,
-        #{},
-        {test_consumer_callback, undefined},
-        #{}
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        ?TOPIC_OPTIONS,
+        ?FETCHER_METADATA
     ),
 
-    Subscription = #{
-        TopicName => {#{}, #{P => 0 || P <- Partitions}}
-    },
-
-    ok = kafine_consumer:subscribe(Consumer, Subscription),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => Partitions}),
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
 
     % Wait for the fetch to complete for each partition.
     Wait = fun() ->
         [
-            meck:wait(
-                test_consumer_callback, end_record_batch, ['_', P, '_', '_', '_'], ?WAIT_TIMEOUT_MS
+            ?assertWait(
+                test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(P), '_', '_'], ?WAIT_TIMEOUT_MS
             )
          || P <- Partitions
         ],
-        meck:reset(test_consumer_callback)
+        meck:reset(test_fetcher_callback)
     end,
 
     Wait(),
 
     % Move the partitions over one node.
     reassign_partitions(#{0 => 102, 1 => 103, 2 => 101, 3 => 102}, NodeIds),
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
 
     % Wait for the fetch to complete for each partition.
     Wait(),
 
     % Move the partitions over one node.
     reassign_partitions(#{0 => 103, 1 => 101, 2 => 102, 3 => 103}, NodeIds),
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
 
     % Wait for the fetch to complete for each partition.
     Wait(),
@@ -198,7 +200,9 @@ partitions_move_repeatedly() ->
     assert_active_connections(1, 102, Brokers),
     assert_active_connections(1, 103, Brokers),
 
-    kafine_consumer:stop(Consumer),
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_cluster:stop(Cluster),
     ok.
 
@@ -219,24 +223,28 @@ offset_reset_policy_is_preserved() ->
     NodeIds = [101, 102, 103],
     {ok, Cluster, _Brokers = [Bootstrap | _]} = kamock_cluster:start(?CLUSTER_REF, NodeIds),
 
-    {ok, Consumer} = kafine_consumer:start_link(
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Bootstrap, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
         ?CONSUMER_REF,
-        Bootstrap,
-        #{},
-        {test_consumer_callback, undefined},
-        #{}
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        ?TOPIC_OPTIONS,
+        ?FETCHER_METADATA
     ),
 
     TopicName = ?TOPIC_NAME,
-    Subscription = #{
-        TopicName => {#{offset_reset_policy => latest}, #{0 => 0}}
-    },
+    Partitions = [0],
 
     % Start with the partition on a particular node.
     reassign_partitions(#{0 => 101, 1 => 101, 2 => 101, 3 => 101}, NodeIds),
-    ok = kafine_consumer:subscribe(Consumer, Subscription),
 
-    meck:wait(test_consumer_callback, end_record_batch, ['_', 0, '_', '_', '_'], ?WAIT_TIMEOUT_MS),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => Partitions}),
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
+
+    ?assertWait(
+        test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(0), '_', '_'], ?WAIT_TIMEOUT_MS
+    ),
 
     % Move the partitions. We've got an offset; we don't expect the reset policy to be called.
     reassign_partitions(#{0 => 102, 1 => 102, 2 => 102, 3 => 102}, NodeIds),
@@ -260,10 +268,14 @@ offset_reset_policy_is_preserved() ->
         end
     ),
 
+    fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
+
     % We should see a ListOffsets request.
     meck:wait(kamock_list_offsets, handle_list_offsets_request, '_', ?WAIT_TIMEOUT_MS),
 
-    kafine_consumer:stop(Consumer),
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_cluster:stop(Cluster),
     ok.
 
@@ -354,3 +366,23 @@ reassign_partitions(PartitionLeaders, NodeIds) ->
         end
     ),
     ok.
+
+fetch_all(Ref, Topic, Partitions, Offset) ->
+    lists:foreach(
+        fun(Partition) ->
+            kafine_fetcher:fetch(
+                Ref,
+                Topic,
+                Partition,
+                Offset,
+                test_fetcher_callback,
+                undefined
+            )
+        end,
+        Partitions
+    ).
+
+for_partition(Partition) ->
+    meck:is(
+        fun(#{partition_index := P}) -> P =:= Partition end
+    ).

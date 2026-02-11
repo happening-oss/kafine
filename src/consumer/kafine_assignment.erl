@@ -35,7 +35,7 @@ handle_assignment(
 
 %% Called when we need to stop fetching after reassignment.
 revoke_assignments(
-    #{assigned_partitions := RedundantAssignments},
+    RedundantAssignments,
     {SubscriptionCallback, SubscriptionState0},
     {AssignmentCallback, AssignmentState0}
 ) ->

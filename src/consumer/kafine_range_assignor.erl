@@ -30,7 +30,7 @@ metadata(Topics) ->
 
 -spec assign(
     Members :: [kafine_assignor:member()],
-    TopicPartitions :: kafine_assignor:topic_partitions(),
+    TopicPartitions :: kafine_topic_partitions:t(),
     AssignmentUserData :: binary()
 ) -> kafine_assignor:assignments().
 
@@ -70,8 +70,8 @@ create_initial_assignments(Members, Initial) ->
     ).
 %% For each topic, share the partitions between the members.
 do_assign(Members0, TopicPartitions, Acc0) ->
-    lists:foldl(
-        fun(#{name := Topic, partitions := Partitions}, Acc1) ->
+    maps:fold(
+        fun(Topic, Partitions, Acc1) ->
             % Only include the members that want this topic.
             Members = lists:filter(
                 fun(_M = #{metadata := #{topics := Topics}}) ->

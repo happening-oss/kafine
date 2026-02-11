@@ -1,9 +1,4 @@
 -module(kafine_fetch_response_tests).
-% Used by other tests.
--export([
-    init_topic_partition_states/1,
-    cleanup_topic_partition_states/1
-]).
 
 -include_lib("eunit/include/eunit.hrl").
 -include("assert_meck.hrl").
@@ -11,13 +6,10 @@
 
 -include_lib("kafcod/include/error_code.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
-
 -elvis([{elvis_style, dont_repeat_yourself, disable}]).
 
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(PARTITION, 61).
--define(TELEMETRY_EVENT_METADATA, #{node_id => 501}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, {state, ?MODULE}).
@@ -28,7 +20,8 @@ all_test_() ->
         fun empty_response_leaves_offset_unchanged/0,
         fun unwanted_records_are_dropped/0,
         fun unwanted_records_are_dropped_2/0,
-        fun unsubscribed/0
+        fun skipping_empty_fetches_result_in_repeat_and_no_callback/0,
+        fun skipping_empty_after_first_enables_skipping_after_first_response/0
     ]}.
 
 setup() ->
@@ -40,15 +33,11 @@ setup() ->
     meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
     meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
-    meck:expect(kafine_consumer, init_ack, fun(_Ref, _Topic, _Partition, _State) -> ok end),
-    meck:expect(kafine_consumer, continue, fun(
-        _Ref, _Topic, _Partition, _NextOffset, _NextState, _Span
-    ) ->
-        ok
-    end),
-    meck:expect(kafine_consumer, unsubscribe, fun(_Ref, _TopicPartitions) ->
-        ok
-    end),
+    meck:new(kafine_parallel_handler, [passthrough]),
+
+    meck:new(kafine_fetcher, [stub_all]),
+    meck:expect(kafine_fetcher, whereis, fun(_) -> self() end),
+
     ok.
 
 cleanup(_) ->
@@ -56,57 +45,101 @@ cleanup(_) ->
 
 empty_response_leaves_offset_unchanged() ->
     TopicName = ?TOPIC_NAME,
+
+    {ok, Handler} = kafine_parallel_handler:start_link(
+        ?CONSUMER_REF,
+        {TopicName, ?PARTITION},
+        0,
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS,
+            skip_empty_fetches => false,
+            error_mode => reset
+        }
+    ),
+
+    FetchInfo = #{
+        TopicName => #{
+            ?PARTITION => {0, kafine_parallel_handler, {Handler, false}}
+        }
+    },
+
+    PartitionData =
+        #{
+            partition_index => ?PARTITION,
+            error_code => ?NONE,
+            % An empty fetch response returns empty 'records' here.
+            % See 'fetch_response_tests:v11_empty_response_test/0' in kafcod.
+            records => [],
+            high_watermark => 0,
+            last_stable_offset => 0,
+            log_start_offset => 0,
+            aborted_transactions => [],
+            preferred_read_replica => -1
+        },
+
     EmptyFetchResponse = #{
         error_code => ?NONE,
         responses => [
             #{
                 topic => TopicName,
-                partitions => [
-                    #{
-                        partition_index => ?PARTITION,
-                        error_code => ?NONE,
-                        % An empty fetch response returns empty 'records' here.
-                        % See 'fetch_response_tests:v11_empty_response_test/0' in kafcod.
-                        records => [],
-                        high_watermark => 0,
-                        last_stable_offset => 0,
-                        log_start_offset => 0,
-                        aborted_transactions => [],
-                        preferred_read_replica => -1
-                    }
-                ]
+                partitions => [PartitionData]
             }
         ],
         throttle_time_ms => 0,
         session_id => 0
     },
 
-    TopicPartitionStates = init_topic_partition_states(
-        #{
-            TopicName => #{
-                ?PARTITION => #{}
-            }
-        }
+    ok = kafine_fetch:handle_response(
+        EmptyFetchResponse,
+        FetchInfo,
+        1,
+        101,
+        #{},
+        self()
     ),
 
-    {TopicPartitionStates2, Errors} =
-        kafine_fetch_response:fold(
-            EmptyFetchResponse,
-            TopicPartitionStates,
-            ?TELEMETRY_EVENT_METADATA
-        ),
-    ?assertEqual(#{}, Errors),
+    % Wait for parallel handler call
+    ?assertWait(
+        kafine_parallel_handler,
+        handle_partition_data,
+        [
+            {Handler, false},
+            TopicName,
+            PartitionData,
+            0,
+            '_'
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-    % Assert that we've been marked as busy.
-    ?assertEqual(make_busy(TopicPartitionStates), TopicPartitionStates2),
+    % Should complete job
+    ?assertWait(
+        kafine_fetcher,
+        complete_job,
+        [
+            '_',
+            1,
+            101,
+            #{
+                TopicName => #{
+                    ?PARTITION => completed
+                }
+            }
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-    % Wait until continue is called.
-    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+    % Should re-request the same offset
+    ?assertWait(
+        kafine_fetcher,
+        fetch,
+        [
+            '_', TopicName, ?PARTITION, 0, kafine_parallel_handler, {Handler, false}
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-    % No records => no change
-    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 0, active, '_']),
-
-    cleanup_topic_partition_states(TopicPartitionStates),
     ok.
 
 unwanted_records_are_dropped() ->
@@ -115,9 +148,22 @@ unwanted_records_are_dropped() ->
     %
     % If you then send a Fetch request for offset 43, the Fetch response will include the entire batch.
     %
-    % kafine_fetch_response is responsible for skipping over those messages.
+    % kafine_fetch:handle_response is responsible for skipping over those messages.
 
     TopicName = ?TOPIC_NAME,
+    StartOffset = 43,
+
+    {ok, Handler} = kafine_parallel_handler:start_link(
+        ?CONSUMER_REF,
+        {TopicName, ?PARTITION},
+        StartOffset,
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS,
+            skip_empty_fetches => false,
+            error_mode => reset
+        }
+    ),
 
     % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
     Timestamp = 1723657274686,
@@ -153,20 +199,48 @@ unwanted_records_are_dropped() ->
         session_id => 0
     },
 
-    TopicPartitionStates = init_topic_partition_states(#{
+    FetchInfo = #{
         TopicName => #{
-            ?PARTITION => #{offset => 43}
+            ?PARTITION => {StartOffset, kafine_parallel_handler, {Handler, false}}
         }
-    }),
+    },
 
-    {_TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
-        FetchResponse, TopicPartitionStates, ?TELEMETRY_EVENT_METADATA
+    ok = kafine_fetch:handle_response(
+        FetchResponse,
+        FetchInfo,
+        1,
+        101,
+        #{},
+        self()
     ),
 
-    % Wait until continue is called.
-    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+    % Should complete job
+    ?assertWait(
+        kafine_fetcher,
+        complete_job,
+        [
+            '_',
+            1,
+            101,
+            #{
+                TopicName => #{
+                    ?PARTITION => completed
+                }
+            }
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-    ?assertEqual(#{}, Errors),
+    % Wait until next fetch is called.
+    ?assertWait(
+        kafine_fetcher,
+        fetch,
+        [
+            '_', TopicName, ?PARTITION, 45, kafine_parallel_handler, {Handler, false}
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
     ?assertMatch(
         [
             {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
@@ -180,9 +254,6 @@ unwanted_records_are_dropped() ->
         meck:history(test_consumer_callback)
     ),
 
-    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 45, active, '_']),
-
-    cleanup_topic_partition_states(TopicPartitionStates),
     ok.
 
 unwanted_records_are_dropped_2() ->
@@ -191,6 +262,19 @@ unwanted_records_are_dropped_2() ->
     % might get bitten if it does, so here's a regression test.
 
     TopicName = ?TOPIC_NAME,
+    StartOffset = 55,
+
+    {ok, Handler} = kafine_parallel_handler:start_link(
+        ?CONSUMER_REF,
+        {TopicName, ?PARTITION},
+        StartOffset,
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS,
+            skip_empty_fetches => false,
+            error_mode => reset
+        }
+    ),
 
     RecordBatches = [
         make_record_batch(51, 54),
@@ -210,20 +294,48 @@ unwanted_records_are_dropped_2() ->
         session_id => 0
     },
 
-    TopicPartitionStates = init_topic_partition_states(#{
+    FetchInfo = #{
         TopicName => #{
-            ?PARTITION => #{offset => 55}
+            ?PARTITION => {55, kafine_parallel_handler, {Handler, false}}
         }
-    }),
+    },
 
-    {_TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
-        FetchResponse, TopicPartitionStates, ?TELEMETRY_EVENT_METADATA
+    ok = kafine_fetch:handle_response(
+        FetchResponse,
+        FetchInfo,
+        1,
+        101,
+        #{},
+        self()
     ),
 
-    % Wait until continue is called.
-    meck:wait(kafine_consumer, continue, '_', ?WAIT_TIMEOUT_MS),
+    % Should complete job
+    ?assertWait(
+        kafine_fetcher,
+        complete_job,
+        [
+            '_',
+            1,
+            101,
+            #{
+                TopicName => #{
+                    ?PARTITION => completed
+                }
+            }
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-    ?assertEqual(#{}, Errors),
+    % Wait until next fetch is called.
+    ?assertWait(
+        kafine_fetcher,
+        fetch,
+        [
+            '_', TopicName, ?PARTITION, 57, kafine_parallel_handler, {Handler, false}
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
     ?assertMatch(
         [
             {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
@@ -236,90 +348,230 @@ unwanted_records_are_dropped_2() ->
         meck:history(test_consumer_callback)
     ),
 
-    ?assertCalled(kafine_consumer, continue, ['_', ?TOPIC_NAME, ?PARTITION, 57, active, '_']),
-
-    cleanup_topic_partition_states(TopicPartitionStates),
     ok.
 
-unsubscribed() ->
+skipping_empty_fetches_result_in_repeat_and_no_callback() ->
     TopicName = ?TOPIC_NAME,
+
+    {ok, Handler} = kafine_parallel_handler:start_link(
+        ?CONSUMER_REF,
+        {TopicName, ?PARTITION},
+        0,
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS,
+            skip_empty_fetches => true,
+            error_mode => reset
+        }
+    ),
+    meck:reset(kafine_fetcher),
+
+    FetchInfo = #{
+        TopicName => #{
+            ?PARTITION => {0, kafine_parallel_handler, {Handler, true}}
+        }
+    },
+
+    PartitionData =
+        #{
+            partition_index => ?PARTITION,
+            error_code => ?NONE,
+            % An empty fetch response returns empty 'records' here.
+            % See 'fetch_response_tests:v11_empty_response_test/0' in kafcod.
+            records => [],
+            high_watermark => 0,
+            last_stable_offset => 0,
+            log_start_offset => 0,
+            aborted_transactions => [],
+            preferred_read_replica => -1
+        },
+
     EmptyFetchResponse = #{
         error_code => ?NONE,
         responses => [
             #{
                 topic => TopicName,
-                partitions => [
-                    #{
-                        partition_index => ?PARTITION,
-                        error_code => ?NONE,
-                        % An empty fetch response returns empty 'records' here.
-                        % See 'fetch_response_tests:v11_empty_response_test/0' in kafcod.
-                        records => [],
-                        high_watermark => 0,
-                        last_stable_offset => 0,
-                        log_start_offset => 0,
-                        aborted_transactions => [],
-                        preferred_read_replica => -1
-                    }
-                ]
+                partitions => [PartitionData]
             }
         ],
         throttle_time_ms => 0,
         session_id => 0
     },
 
-    % We unsubscribed from the topic/partition while it was in flight...
-    TopicPartitionStates = #{},
-    {TopicPartitionStates2, Errors} =
-        kafine_fetch_response:fold(
-            EmptyFetchResponse,
-            TopicPartitionStates,
-            ?TELEMETRY_EVENT_METADATA
-        ),
+    ok = kafine_fetch:handle_response(
+        EmptyFetchResponse,
+        FetchInfo,
+        1,
+        101,
+        #{},
+        self()
+    ),
 
-    % No records => no change
-    ?assertEqual(TopicPartitionStates, TopicPartitionStates2),
-    ?assertEqual(#{}, Errors),
+    % Wait for parallel handler call
+    ?assertWait(
+        kafine_parallel_handler,
+        handle_partition_data,
+        [
+            {Handler, true},
+            TopicName,
+            PartitionData,
+            0,
+            '_'
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    % Should complete job with repeat
+    ?assertWait(
+        kafine_fetcher,
+        complete_job,
+        [
+            '_',
+            1,
+            101,
+            #{
+                TopicName => #{
+                    ?PARTITION => repeat
+                }
+            }
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    ?assertMatch(
+        [
+            {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}}
+        ],
+        meck:history(test_consumer_callback)
+    ),
+
+    % Should not re-request the same offset
+    ?assertNotCalled(kafine_fetcher, fetch, '_'),
+
     ok.
 
-init_topic_partition_states(InitStates) ->
-    maps:map(
-        fun(TopicName, InitPartitionStates) ->
-            maps:map(
-                fun(PartitionIndex, InitPartitionState) ->
-                    InitState = maps:get(state, InitPartitionState, active),
-                    InitOffset = maps:get(offset, InitPartitionState, 0),
-                    {ok, ClientPid} = kafine_consumer_callback_process:start_link(
-                        ?CONSUMER_REF,
-                        TopicName,
-                        PartitionIndex,
-                        test_consumer_callback,
-                        ?CALLBACK_ARGS
-                    ),
-                    #topic_partition_state{
-                        state = InitState,
-                        offset = InitOffset,
-                        client_pid = ClientPid
-                    }
-                end,
-                InitPartitionStates
-            )
-        end,
-        InitStates
-    ).
+skipping_empty_after_first_enables_skipping_after_first_response() ->
+    % If a Produce request contains multiple messages, these will usually end up in a single batch, so the batch might
+    % end up containing messages with offsets [41, 42, 43, 44, ...].
+    %
+    % If you then send a Fetch request for offset 43, the Fetch response will include the entire batch.
+    %
+    % kafine_fetch:handle_response is responsible for skipping over those messages.
 
-cleanup_topic_partition_states(TopicPartitionStates) ->
-    maps:foreach(
-        fun(_TopicName, PartitionStates) ->
-            maps:foreach(
-                fun(_PartitionIndex, #topic_partition_state{client_pid = ClientPid}) ->
-                    kafine_consumer_callback_process:stop(ClientPid)
-                end,
-                PartitionStates
-            )
-        end,
-        TopicPartitionStates
-    ).
+    TopicName = ?TOPIC_NAME,
+    StartOffset = 43,
+
+    {ok, Handler} = kafine_parallel_handler:start_link(
+        ?CONSUMER_REF,
+        {TopicName, ?PARTITION},
+        StartOffset,
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS,
+            skip_empty_fetches => after_first,
+            error_mode => reset
+        }
+    ),
+
+    ?assertWait(
+        kafine_fetcher,
+        fetch,
+        [
+            '_', TopicName, ?PARTITION, StartOffset, kafine_parallel_handler, {Handler, false}
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
+    Timestamp = 1723657274686,
+    _FormattedTimestamp = calendar:system_time_to_rfc3339(
+        Timestamp, [{unit, millisecond}, {offset, "Z"}]
+    ),
+
+    MessageCount = 2,
+    BaseOffset = 43,
+    % LastOffset is exclusive; if we have [43, 44], it should be 45.
+    LastOffset = BaseOffset + MessageCount,
+
+    LastOffsetDelta = LastOffset - BaseOffset - 1,
+    Records = [
+        % All records in one batch.
+        make_record(BaseOffset, OffsetDelta)
+     || OffsetDelta <- lists:seq(0, LastOffsetDelta)
+    ],
+    ?assertEqual(MessageCount, length(Records)),
+    RecordBatches = [
+        make_record_batch(BaseOffset, LastOffsetDelta, Timestamp, Records)
+    ],
+    PartitionData = make_partition_data(?PARTITION, RecordBatches, LastOffset),
+    FetchResponse = #{
+        error_code => ?NONE,
+        responses => [
+            #{
+                topic => TopicName,
+                partitions => [PartitionData]
+            }
+        ],
+        throttle_time_ms => 0,
+        session_id => 0
+    },
+
+    FetchInfo = #{
+        TopicName => #{
+            ?PARTITION => {StartOffset, kafine_parallel_handler, {Handler, false}}
+        }
+    },
+
+    ok = kafine_fetch:handle_response(
+        FetchResponse,
+        FetchInfo,
+        1,
+        101,
+        #{},
+        self()
+    ),
+
+    % Should complete job
+    ?assertWait(
+        kafine_fetcher,
+        complete_job,
+        [
+            '_',
+            1,
+            101,
+            #{
+                TopicName => #{
+                    ?PARTITION => completed
+                }
+            }
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    % Wait until next fetch is called. SkipEmpty should be true
+    ?assertWait(
+        kafine_fetcher,
+        fetch,
+        [
+            '_', TopicName, ?PARTITION, 45, kafine_parallel_handler, {Handler, true}
+        ],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    ?assertMatch(
+        [
+            {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
+            {_, {_, begin_record_batch, [TopicName, ?PARTITION, 43, _, _]}, {ok, _}},
+            % 41 and 42 should be dropped; we should see 43 and 44.
+            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key43">>}, _]}, {ok, _}},
+            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key44">>}, _]}, {ok, _}},
+            % end_record_batch should see the offset of the _next_ record, i.e. 45.
+            {_, {_, end_record_batch, [TopicName, ?PARTITION, 45, _, _]}, {ok, _}}
+        ],
+        meck:history(test_consumer_callback)
+    ),
+
+    ok.
 
 make_partition_data(PartitionIndex, RecordBatches, LastOffset) ->
     #{
@@ -379,16 +631,3 @@ make_record_batch(BeginOffset, EndOffset) ->
     ],
 
     make_record_batch(BeginOffset, LastOffsetDelta, Timestamp, Records).
-
-make_busy(TopicPartitionStates) ->
-    maps:map(
-        fun(_Topic, PartitionStates) ->
-            maps:map(
-                fun(_Partition, PartitionState) ->
-                    PartitionState#topic_partition_state{state = busy}
-                end,
-                PartitionStates
-            )
-        end,
-        TopicPartitionStates
-    ).

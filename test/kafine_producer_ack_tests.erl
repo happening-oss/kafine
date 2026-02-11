@@ -17,10 +17,12 @@ all_test_() ->
     ]}.
 
 setup() ->
+    kafine_producer_sup_sup:start_link(),
     meck:new(kamock_produce, [passthrough]),
     ok.
 
 cleanup(_) ->
+    kafine_producer_sup_sup:stop(),
     meck:unload(),
     ok.
 
@@ -37,10 +39,10 @@ ack(Acks) ->
     TelemetryRef = attach_telemetry(),
 
     {ok, Cluster, [Bootstrap | _]} = kamock_cluster:start(?CLUSTER_REF),
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Bootstrap, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Bootstrap, ?CONNECTION_OPTIONS),
 
     {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, #{acks => Acks}, #{}, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, #{acks => Acks}, #{}, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,
@@ -54,7 +56,7 @@ ack(Acks) ->
     #{acks := AcksRequested} = ProduceRequest,
     ?assertEqual(Acks, convert_acks(AcksRequested)),
 
-    kafine_producer:stop(Pid),
+    kafine:stop_producer(?PRODUCER_REF),
     kamock_cluster:stop(Cluster),
     telemetry:detach(TelemetryRef),
     ok.

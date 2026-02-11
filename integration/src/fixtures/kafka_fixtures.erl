@@ -1,6 +1,7 @@
 -module(kafka_fixtures).
 -export([
     create_topic/2,
+    create_topic/4,
     delete_topic/2,
     get_leader/3,
     produce_message/4,

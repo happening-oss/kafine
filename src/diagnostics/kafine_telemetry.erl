@@ -14,9 +14,7 @@
     stop_span/4,
 
     span_exception/4,
-    span_exception/5,
-
-    subscribed_to/1
+    span_exception/5
 ]).
 
 -export_type([
@@ -24,12 +22,14 @@
     span_function/1
 ]).
 
+-include("../kafine_eqwalizer.hrl").
+
 -define(TELEMETRY_KEY, ?MODULE).
 
 -type span() :: {telemetry:event_measurements(), telemetry:event_metadata()}.
 
 % It's occasionally useful to wrap a gen_server:call or gen_statem:call in a telemetry:span, but to do that we need the
-% callee's telemetry metadata. We put it in the process dictionary.
+% callee's telemetry metadata. We put it in the process dictionary. Currently used only for kafine_connection.
 put_metadata(Metadata) when is_map(Metadata) ->
     put(?TELEMETRY_KEY, Metadata),
     ok.
@@ -37,7 +37,11 @@ put_metadata(Metadata) when is_map(Metadata) ->
 get_metadata(Pid) when is_pid(Pid) ->
     kafine_proc_lib:get_dictionary(Pid, ?TELEMETRY_KEY, #{}).
 
--type span_function(SpanResult) :: fun(() -> {SpanResult, telemetry:event_metadata()}).
+-type span_function(SpanResult) :: fun(() -> span_function_ret(SpanResult)).
+-type span_function_ret(SpanResult) ::
+    {SpanResult, StopMetadata :: telemetry:event_metadata()}
+    | {SpanResult, ExtraMeasurements :: telemetry:event_measurements(),
+        StopMetadata :: telemetry:event_metadata()}.
 
 -spec span(
     EventPrefix :: telemetry:event_prefix(),
@@ -45,13 +49,30 @@ get_metadata(Pid) when is_pid(Pid) ->
     SpanFunction :: span_function(SpanResult)
 ) -> SpanResult.
 
+% Note that, unlike telemetry:span/3, we _do_ merge the start metadata and the stop metadata. This more closely mirrors
+% the behaviour of our start_span() and stop_span() functions.
 span(EventPrefix, StartMetadata, SpanFunction) ->
-    % The type specs on telemetry:span are too tight. It annoys eqwalizer. Use a utility function to hide it.
-    delete_type_(telemetry:span(EventPrefix, StartMetadata, SpanFunction)).
+    % The type specs on telemetry:span are too tight -- `span_result() :: term()` should be a type variable.
+    % It annoys eqwalizer. Use ?DYNAMIC_CAST to hide it.
+    % ELP doesn't recognise telemetry:span/3 because of the docstring macros, so we suppress that warning as well.
+    % elp:ignore W0017 (undefined_function)
+    ?DYNAMIC_CAST(
+        telemetry:span(
+            EventPrefix,
+            StartMetadata,
+            wrap_span_function(StartMetadata, SpanFunction)
+        )
+    ).
 
-delete_type_(Value) ->
-    % The underscore suffix in the name means "ugly".
-    Value.
+wrap_span_function(StartMetadata, SpanFunction) ->
+    fun() ->
+        case SpanFunction() of
+            {Result, StopMetadata} ->
+                {Result, maps:merge(StartMetadata, StopMetadata)};
+            {Result, ExtraMeasurements, StopMetadata} ->
+                {Result, ExtraMeasurements, maps:merge(StartMetadata, StopMetadata)}
+        end
+    end.
 
 -spec start_span(
     EventPrefix :: telemetry:event_prefix(),
@@ -131,13 +152,3 @@ span_exception(
 
 merge_ctx(Metadata = #{telemetry_span_context := _}, _Ctx) -> Metadata;
 merge_ctx(Metadata, Ctx) -> Metadata#{telemetry_span_context => Ctx}.
-
-subscribed_to(TopicPartitionStates) ->
-    % This creates a map of #{topic => partitions} from the TopicPartitionStates
-    % that is returned from the consumer.
-    maps:map(
-        fun(_T, Ps) ->
-            maps:keys(Ps)
-        end,
-        TopicPartitionStates
-    ).

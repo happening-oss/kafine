@@ -37,8 +37,9 @@ SubscriptionOptions = #{}.
 Callback = {kafine_consumer_callback_logger, undefined}.
 Topics = [<<"cars">>].
 TopicOptions = #{<<"cars">> => #{offset_reset_policy => latest}}.
+Metadata = #{}.
 
-{ok, _} = kafine:start_topic_consumer(Ref, Bootstrap, ConnectionOptions, ConsumerOptions, SubscriptionOptions, Callback, Topics, TopicOptions).
+{ok, _} = kafine:start_topic_consumer(Ref, Bootstrap, ConnectionOptions, ConsumerOptions, SubscriptionOptions, Callback, Topics, TopicOptions, Metadata).
 ```
 
 You can use (e.g.) `kcat` to produce a message:
@@ -121,7 +122,7 @@ ConnectionOptions = #{}.
 Topic = <<"cars">>.
 Partition = 0.
 
-{ok, Pid} = kafine_producer:start_link(Ref, Bootstrap, ConnectionOptions).
+{ok, Pid} = kafine:start_producer(Ref, Bootstrap, ConnectionOptions).
 
 Messages = [
     #{

@@ -11,11 +11,13 @@
 -define(PARTITION_3, 3).
 
 setup() ->
+    kafine_producer_sup_sup:start_link(),
     meck:new(kamock_partition_produce_response, [passthrough]),
     meck:new(kamock_metadata, [passthrough]),
     ok.
 
 cleanup(_) ->
+    kafine_producer_sup_sup:stop(),
     meck:unload().
 
 kafine_node_producer_test_() ->
@@ -31,10 +33,10 @@ kafine_node_producer_test_() ->
 simple_tests() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, #{}, #{}, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, #{}, #{}, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,
@@ -43,14 +45,15 @@ simple_tests() ->
         ]
     ),
 
+    kafine:stop_producer(?PRODUCER_REF),
     ok.
 
 batch_produce() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
-    {ok, Responses} = kafine_producer:produce_batch(Pid, #{}, make_batch(?TOPIC_NAME), #{}),
+    {ok, Responses} = kafine_producer:produce_batch(?PRODUCER_REF, #{}, make_batch(?TOPIC_NAME), #{}),
 
     ExpectedResponses = #{
         ?PARTITION_1 =>
@@ -90,7 +93,7 @@ batch_produce() ->
 batch_produce_with_errors() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     IsPartition = fun(PartitionIndex) -> fun(#{index := P}) -> PartitionIndex =:= P end end,
     meck:expect(
@@ -105,7 +108,7 @@ batch_produce_with_errors() ->
         ]
     ),
 
-    {ok, Responses} = kafine_producer:produce_batch(Pid, #{}, make_batch(?TOPIC_NAME), #{}),
+    {ok, Responses} = kafine_producer:produce_batch(?PRODUCER_REF, #{}, make_batch(?TOPIC_NAME), #{}),
 
     ExpectedResponses = #{
         ?PARTITION_1 =>
@@ -172,7 +175,7 @@ make_batch(Topic) ->
 will_refresh_metadata_on_not_leader_error() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     meck:expect(
         kamock_partition_produce_response,
@@ -188,7 +191,7 @@ will_refresh_metadata_on_not_leader_error() ->
 
     % eventually produce succeeds
     {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, #{}, #{}, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, #{}, #{}, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,
@@ -208,7 +211,7 @@ will_refresh_metadata_on_not_leader_error() ->
 will_retry_on_error() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     meck:expect(
         kamock_partition_produce_response,
@@ -232,7 +235,7 @@ will_retry_on_error() ->
 
     % eventually produce succeeds
     {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, RetryConfig, #{}, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, RetryConfig, #{}, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,
@@ -249,7 +252,7 @@ will_retry_on_error() ->
 will_retry_up_to_max() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     meck:expect(
         kamock_partition_produce_response,
@@ -273,7 +276,7 @@ will_retry_up_to_max() ->
 
     % produce will fail after one attempt
     {ok, #{error_code := ?NOT_ENOUGH_REPLICAS}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, RetryConfig, #{}, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, RetryConfig, #{}, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,

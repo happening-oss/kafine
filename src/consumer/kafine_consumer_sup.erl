@@ -1,97 +1,110 @@
 -module(kafine_consumer_sup).
--moduledoc false.
--export([
-    start_group_consumer_linked/8,
-    start_topic_consumer_linked/7
-]).
+-include("../kafine_doc.hrl").
+?MODULEDOC("""
+Generic supervision tree for a kafine consumer
+""").
+
 -behaviour(supervisor).
+
+-export([
+    start_link/8,
+    stop/1
+]).
+
 -export([init/1]).
 
-start_consumer(
+id(Ref) -> {?MODULE, Ref}.
+
+via(Ref) ->
+    kafine_via:via(id(Ref)).
+
+?DOC("""
+Start and link a supervision tree for a kafine consumer.
+
+- `Ref` - Unique reference for this consumer
+- `Bootstrap` - Connection information for the bootstrap broker
+- `ConnectionOptions` - Options for establishing connections to brokers
+- `ConsumerOptions` - Options for the consumer
+- `Topics` - List of topics to consume from
+- `TopicOptions` - Options for the topics
+- `AdditionalChildSpecs` - Additional child specifications to include in the supervision tree.
+                           It's likely you at least want a child spec for a subscriber in here.
+""").
+
+start_link(
     Ref,
-    Broker,
+    Bootstrap,
     ConnectionOptions,
     ConsumerOptions,
-    ConsumerCallback,
-    SubscriberSpec
+    Topics,
+    TopicOptions,
+    Metadata,
+    AdditionalChildSpecs
 ) ->
-    {ok, Sup} = supervisor:start_link(?MODULE, [Ref]),
-
-    ConsumerSpec = #{
-        id => make_consumer_id(Ref),
-        start =>
-            {kafine_consumer, start_link, [
-                Ref, Broker, ConnectionOptions, ConsumerCallback, ConsumerOptions
-            ]}
-    },
-    {ok, _Consumer} = supervisor:start_child(Sup, ConsumerSpec),
-
-    {ok, _S} = supervisor:start_child(Sup, SubscriberSpec),
-
-    {ok, Sup}.
-
-% TODO: Maybe 'Topics' can be a map OR a list?
-start_group_consumer_linked(
-    Ref,
-    Broker,
-    ConnectionOptions,
-    GroupId,
-    MembershipOptions,
-    ConsumerOptions,
-    ConsumerCallback,
-    Topics
-) ->
-    SubscriberSpec = #{
-        id => make_membership_id(Ref),
-        start =>
-            {kafine_eager_rebalance, start_link, [
-                Ref, Broker, ConnectionOptions, GroupId, MembershipOptions, Topics
-            ]}
-    },
-    start_consumer(
-        Ref,
-        Broker,
-        ConnectionOptions,
-        ConsumerOptions,
-        ConsumerCallback,
-        SubscriberSpec
+    supervisor:start_link(
+        via(Ref),
+        ?MODULE,
+        [
+            Ref,
+            Bootstrap,
+            kafine_connection_options:validate_options(ConnectionOptions),
+            kafine_consumer_options:validate_options(ConsumerOptions),
+            kafine_topic_options:validate_options(Topics, TopicOptions),
+            Metadata,
+            AdditionalChildSpecs
+        ]
     ).
 
-start_topic_consumer_linked(
+init([
     Ref,
-    Broker,
+    Bootstrap,
     ConnectionOptions,
-    SubscriberOptions,
     ConsumerOptions,
-    ConsumerCallback,
-    Topics
-) ->
-    SubscriberSpec = #{
-        id => make_subscriber_id(Ref),
-        start =>
-            {kafine_topic_subscriber, start_link, [
-                Ref, Broker, ConnectionOptions, SubscriberOptions, Topics
-            ]},
-        % If this process stops normal then its job is done and doesn't
-        % need to be restarted
-        restart => transient
-    },
-    start_consumer(
-        Ref,
-        Broker,
-        ConnectionOptions,
-        ConsumerOptions,
-        ConsumerCallback,
-        SubscriberSpec
-    ).
-
-init([Ref]) ->
+    TopicOptions,
+    Metadata,
+    AdditionalChildSpecs
+]) ->
     kafine_proc_lib:set_label({?MODULE, Ref}),
-    {ok, {{one_for_one, 1, 5}, []}}.
+    Children =
+        [
+            #{
+                id => bootstrap,
+                start => {kafine_bootstrap, start_link, [Ref, Bootstrap, ConnectionOptions]},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [kafine_bootstrap]
+            },
+            #{
+                id => metadata_cache,
+                start => {kafine_metadata_cache, start_link, [Ref]},
+                restart => permanent,
+                shutdown => 5000,
+                type => worker,
+                modules => [kafine_metadata_cache]
+            },
+            #{
+                id => fetcher_sup,
+                start =>
+                    {kafine_fetcher_sup, start_link, [
+                        Ref, ConnectionOptions, ConsumerOptions, TopicOptions, Metadata
+                    ]},
+                restart => permanent,
+                shutdown => infinity,
+                type => supervisor,
+                modules => [kafine_fetcher_sup]
+            }
+        ] ++ AdditionalChildSpecs,
+    SupFlags = #{
+        strategy => one_for_all,
+        intensity => 1,
+        period => 5
+    },
+    {ok, {SupFlags, Children}}.
 
-make_consumer_id(Ref) ->
-    {kafine_consumer, Ref}.
-make_membership_id(Ref) ->
-    {kafine_membership, Ref}.
-make_subscriber_id(Ref) ->
-    {kafine_subscriber, Ref}.
+stop(Pid) when is_pid(Pid) ->
+    monitor(process, Pid),
+    exit(Pid, normal),
+    receive
+        {'DOWN', _, process, Pid, _} -> ok
+    end.

@@ -1,21 +1,25 @@
 -module(kafine_consumer_offset_reset_policy_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include_lib("kafcod/include/timestamp.hrl").
+
+-include("assert_meck.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
+-define(CONNECTION_OPTIONS, kafine_connection_options:validate_options(#{})).
+-define(CONSUMER_OPTIONS, kafine_consumer_options:validate_options(#{})).
+-define(FETCHER_METADATA, #{}).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
-    meck:new(test_consumer_callback, [non_strict]),
-    meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
-        {ok, St}
-    end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
+    meck:new(test_fetcher_callback, [non_strict]),
+    meck:expect(test_fetcher_callback, handle_partition_data, fun(_A, _T, _P, _O, _U) -> ok end),
+
+    meck:new(kamock_list_offsets, [passthrough]),
+    meck:new(kamock_fetch, [passthrough]),
+
     ok.
 
 cleanup(_) ->
@@ -29,98 +33,217 @@ all_test_() ->
 
 earliest() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, Consumer} = kafine_consumer:start_link(
+
+    TopicName = ?TOPIC_NAME,
+    Partition = 0,
+    TopicOptions = #{
+        TopicName => kafine_topic_options:validate_options(#{offset_reset_policy => earliest})
+    },
+
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
         ?CONSUMER_REF,
-        Broker,
-        #{},
-        {test_consumer_callback, ?CALLBACK_ARGS},
-        #{}
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        TopicOptions,
+        ?FETCHER_METADATA
     ),
 
     % Initially, pretend to have 3 messages.
-    kafine_kamock:produce(0, 3),
+    kafine_kamock:produce(0, 1),
 
-    % If we specify 'earliest', we should get all of the messages.
-    TopicName = ?TOPIC_NAME,
-    Partition = 0,
-    Subscription = #{TopicName => {#{offset_reset_policy => earliest}, #{Partition => earliest}}},
-    kafine_consumer:subscribe(Consumer, Subscription),
+    % If we specify 'earliest', we should get the first message.
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => [Partition]}),
+    fetch(?CONSUMER_REF, TopicName, Partition, earliest),
 
-    meck:wait(3, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    % kamock only sends the first message to our first fetch
+    ?assertWait(test_fetcher_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS),
     ?assertMatch(
         [
-            {TopicName, Partition, #{key := <<"key0">>}},
-            {TopicName, Partition, #{key := <<"key1">>}},
-            {TopicName, Partition, #{key := <<"key2">>}}
+            {TopicName, Partition, #{key := <<"key0">>}}
         ],
         received_records()
     ),
-    meck:reset(test_consumer_callback),
+    meck:reset(test_fetcher_callback),
+    meck:reset(kamock_list_offsets),
+    meck:reset(kamock_fetch),
 
-    % "Produce" another 2 messages.
-    kafine_kamock:produce(0, 5),
+    % Produce more messages, and discard everything up to and including offset 3
+    kafine_kamock:produce(4, 5),
 
-    meck:wait(2, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    % fetching from 3 should reset, and we should get the new messages.
+    fetch(?CONSUMER_REF, TopicName, Partition, 3),
+
+    % should query the earliest offset
+    ?assertWait(
+        kamock_list_offsets,
+        handle_list_offsets_request,
+        [has_timestamp(?EARLIEST_TIMESTAMP), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    % then fetch from it
+    ?assertWait(
+        kamock_fetch,
+        handle_fetch_request,
+        [has_fetch_offset(4), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    ?assertWait(
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', ?TOPIC_NAME, has_next_offset(5), 4, '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
     ?assertMatch(
         [
-            {TopicName, Partition, #{key := <<"key3">>}},
             {TopicName, Partition, #{key := <<"key4">>}}
         ],
         received_records()
     ),
-    meck:reset(test_consumer_callback),
 
-    kafine_consumer:stop(Consumer),
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
 latest() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
-    {ok, Consumer} = kafine_consumer:start_link(
+
+    TopicName = ?TOPIC_NAME,
+    Partition = 0,
+    TopicOptions = #{
+        TopicName => kafine_topic_options:validate_options(#{offset_reset_policy => latest})
+    },
+
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
         ?CONSUMER_REF,
-        Broker,
-        #{},
-        {test_consumer_callback, ?CALLBACK_ARGS},
-        #{}
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        TopicOptions,
+        ?FETCHER_METADATA
     ),
 
     % Initially, pretend to have 3 messages.
     kafine_kamock:produce(0, 3),
 
     % If we specify 'latest', we should initially get no messages.
-    TopicName = ?TOPIC_NAME,
-    Partition = 0,
-    Subscription = #{TopicName => {#{offset_reset_policy => latest}, #{Partition => latest}}},
-    kafine_consumer:subscribe(Consumer, Subscription),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => [Partition]}),
+    fetch(?CONSUMER_REF, TopicName, Partition, latest),
 
-    meck:wait(1, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch([], received_records()),
-    meck:reset(test_consumer_callback),
-
-    % "Produce" another 2 messages. We should get those.
-    kafine_kamock:produce(0, 5),
-
-    meck:wait(2, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
-        [
-            {TopicName, Partition, #{key := <<"key3">>}},
-            {TopicName, Partition, #{key := <<"key4">>}}
-        ],
-        received_records()
+    ?assertWait(
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', ?TOPIC_NAME, has_next_offset(3), 3, '_'],
+        ?WAIT_TIMEOUT_MS
     ),
-    meck:reset(test_consumer_callback),
+    ?assertMatch([], received_records()),
+    meck:reset(test_fetcher_callback),
+    meck:reset(kamock_list_offsets),
+    meck:reset(kamock_fetch),
 
-    kafine_consumer:stop(Consumer),
+    % Produce more messages, and discard everything up to and including offset 3
+    kafine_kamock:produce(4, 5),
+
+    % fetching from 3 should reset, and we should get the new messages.
+    fetch(?CONSUMER_REF, TopicName, Partition, 3),
+
+    % should query the latest offset
+    ?assertWait(
+        kamock_list_offsets,
+        handle_list_offsets_request,
+        [has_timestamp(?LATEST_TIMESTAMP), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    % then fetch from it
+    ?assertWait(
+        kamock_fetch,
+        handle_fetch_request,
+        [has_fetch_offset(5), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    % fetch should be empty again
+    ?assertWait(
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', ?TOPIC_NAME, has_next_offset(5), 5, '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    ?assertMatch([], received_records()),
+
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
-received_records() ->
-    lists:filtermap(
+has_timestamp(ExpectedTimestamp) ->
+    meck:is(
+        fun(ListOffsetsRequest) ->
+            #{
+                topics := [
+                    #{partitions := [#{partition_index := 0, timestamp := Timestamp}]}
+                ]
+            } = ListOffsetsRequest,
+            Timestamp == ExpectedTimestamp
+        end
+    ).
+
+has_fetch_offset(ExpectedOffset) ->
+    meck:is(
+        fun(FetchRequest) ->
+            #{
+                topics := [
+                    #{partitions := [#{partition := 0, fetch_offset := FetchOffset}]}
+                ]
+            } = FetchRequest,
+            FetchOffset == ExpectedOffset
+        end
+    ).
+
+has_next_offset(ExpectedNextOffset) ->
+    meck:is(
         fun
-            ({_, {_, handle_record, [TopicName, Partition, Record, _]}, _}) ->
-                {true, {TopicName, Partition, Record}};
-            (_) ->
-                false
-        end,
-        meck:history(test_consumer_callback)
+            (#{records := [#{base_offset := Base, last_offset_delta := LastDelta}]}) ->
+                NextOffset = Base + LastDelta + 1,
+                NextOffset =:= ExpectedNextOffset;
+            (#{records := [], high_watermark := HighWatermark}) ->
+                HighWatermark =:= ExpectedNextOffset
+        end
+    ).
+
+received_records() ->
+    lists:flatten(
+        lists:map(
+            fun
+                (
+                    {_,
+                        {_, handle_partition_data, [
+                            _,
+                            Topic,
+                            #{partition_index := Partition, records := [#{records := Records}]},
+                            _,
+                            _
+                        ]},
+                        _}
+                ) ->
+                    [{Topic, Partition, Record} || Record <- Records];
+                (_) ->
+                    []
+            end,
+            meck:history(test_fetcher_callback)
+        )
+    ).
+
+fetch(Ref, Topic, Partition, Offset) ->
+    kafine_fetcher:fetch(
+        Ref,
+        Topic,
+        Partition,
+        Offset,
+        test_fetcher_callback,
+        ?CALLBACK_ARGS
     ).

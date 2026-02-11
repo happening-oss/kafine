@@ -12,7 +12,8 @@
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun single_batch/0,
-        fun two_batches/0
+        fun two_batches/0,
+        fun batch_with_some_records_missing/0
     ]}.
 
 setup() ->
@@ -47,6 +48,23 @@ single_batch() ->
 two_batches() ->
     FetchOffset = 3,
     FetchResponse = canned_fetch_response_two_batches(),
+    {Topic, PartitionData} = split_fetch_response(FetchResponse),
+    FoldResult = kafine_fetch_response_partition_data:fold(
+        Topic,
+        PartitionData,
+        FetchOffset,
+        test_consumer_callback,
+        ?CALLBACK_STATE
+    ),
+    ?assertMatch({9, active, ?CALLBACK_STATE}, FoldResult),
+    ok.
+
+% There's one batch in the fetch response, but the last record in that batch has a different delta
+% to last_offset_delta. This happens due to compaction. We need the NextOffset to be based on the
+% last_offset_delta, not the last record.
+batch_with_some_records_missing() ->
+    FetchOffset = 3,
+    FetchResponse = canned_fetch_response_batch_with_some_records_missing(),
     {Topic, PartitionData} = split_fetch_response(FetchResponse),
     FoldResult = kafine_fetch_response_partition_data:fold(
         Topic,
@@ -185,6 +203,68 @@ canned_fetch_response_two_batches() ->
                                             base_sequence => -1,
                                             base_offset => 6,
                                             crc => 2128003712
+                                        }
+                                    ],
+                                partition_index => 2,
+                                error_code => 0,
+                                last_stable_offset => 9,
+                                aborted_transactions => [],
+                                log_start_offset => 0,
+                                preferred_read_replica => -1
+                            }
+                        ]
+                }
+            ],
+        correlation_id => 2,
+        error_code => 0,
+        throttle_time_ms => 0,
+        session_id => 0
+    }.
+
+canned_fetch_response_batch_with_some_records_missing() ->
+    % This is a fetch response containing [[4, 6]], but it previously had 3-8
+    #{
+        responses =>
+            [
+                #{
+                    topic => <<"cars">>,
+                    partitions =>
+                        [
+                            #{
+                                high_watermark => 9,
+                                records =>
+                                    [
+                                        #{
+                                            attributes => #{compression => none},
+                                            records =>
+                                                [
+                                                    #{
+                                                        attributes => 0,
+                                                        value => <<"value">>,
+                                                        key => <<"key">>,
+                                                        headers => [],
+                                                        offset_delta => 1,
+                                                        timestamp_delta => 0
+                                                    },
+                                                    #{
+                                                        attributes => 0,
+                                                        value => <<"value">>,
+                                                        key => <<"key">>,
+                                                        headers => [],
+                                                        offset_delta => 3,
+                                                        timestamp_delta => 0
+                                                    }
+                                                ],
+                                            producer_id => -1,
+                                            producer_epoch => -1,
+                                            partition_leader_epoch => 0,
+                                            max_timestamp => 1725550237492,
+                                            magic => 2,
+                                            last_offset_delta => 5,
+                                            base_timestamp => 1725550237492,
+                                            base_sequence => -1,
+                                            base_offset => 3,
+                                            crc => 381418536
                                         }
                                     ],
                                 partition_index => 2,

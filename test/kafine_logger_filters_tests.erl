@@ -92,8 +92,10 @@ get_logged_levels() ->
     % What levels were logged?
     lists:filtermap(
         fun
-            ({_, {_, _, [#{level := Level}, _]}, _}) -> {true, Level};
-            (_) -> false
+            ({_Pid, {_M, _F, _A = [_LogEvent = #{level := Level}, _Config]}, _Return}) ->
+                {true, Level};
+            (_) ->
+                false
         end,
         meck:history(test_handler)
     ).

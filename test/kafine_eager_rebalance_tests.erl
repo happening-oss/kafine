@@ -8,7 +8,7 @@
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(WAIT_TIMEOUT_MS, 2_000).
--define(CALLBACK_STATE, undefined).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(REBALANCE_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GROUP_GENERATION_1, 1).
 -define(GROUP_GENERATION_2, 2).
@@ -29,10 +29,10 @@ all_test_() ->
     ]}.
 
 setup() ->
-    meck:new(test_membership_callback, [non_strict]),
-    meck:expect(test_membership_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_membership_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
-    meck:expect(test_membership_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
+    meck:new(test_subscription_callback, [non_strict]),
+    meck:expect(test_subscription_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
+    meck:expect(test_subscription_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
+    meck:expect(test_subscription_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
 
     meck:new(test_assignment_callback, [non_strict]),
     meck:expect(test_assignment_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
@@ -76,23 +76,22 @@ join_new_group_as_leader() ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    % The default for the mock broker is for single-member-as-leader, so we don't need to do anything to set that up.
-
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined},
-            assignors => [test_assignor]
-        },
-        Topics
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
     ),
+
+    % The default for the mock broker is for single-member-as-leader, so we don't need to do anything to set that up.
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     % Wait for JoinGroup w/member_id (see KIP-394).
     meck:wait(
@@ -109,7 +108,7 @@ join_new_group_as_leader() ->
     end,
 
     % Did we revoke assignments?
-    ?assert(meck:called(test_membership_callback, unsubscribe_partitions, '_')),
+    ?assert(meck:called(test_subscription_callback, unsubscribe_partitions, '_')),
 
     % Wait until we're the leader.
     receive
@@ -122,11 +121,11 @@ join_new_group_as_leader() ->
     % Wait for two heartbeat requests (to make sure the timeouts aren't broken).
     meck:wait(2, kamock_heartbeat, handle_heartbeat_request, '_', ?WAIT_TIMEOUT_MS),
 
-    ?assertMatch({leader, _}, sys:get_state(R)),
+    ?assertMatch(#{role := leader}, kafine_eager_rebalance:info(R)),
 
     % Did we get some partitions to start?
     ?assert(
-        meck:called(test_membership_callback, subscribe_partitions, [
+        meck:called(test_subscription_callback, subscribe_partitions, [
             '_',
             meck:is(fun(_Assignment1) ->
                 true
@@ -138,6 +137,9 @@ join_new_group_as_leader() ->
     telemetry:detach(TelemetryRef),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -152,23 +154,23 @@ join_new_group_as_follower() ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
+    GroupId = ?GROUP_ID,
+    Topics = [?TOPIC_NAME],
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined}
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
+    ),
+
     LeaderId = kamock_join_group:generate_member_id(<<"leader">>),
     setup_as_follower(LeaderId, ?TOPIC_NAME, [0, 1, 2, 3]),
 
-    GroupId = ?GROUP_ID,
-    Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        ?GROUP_ID,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
-    ),
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     % Wait until we're the follower
     receive
@@ -178,13 +180,16 @@ join_new_group_as_follower() ->
     % Wait for two hearbeat requests (to make sure the timeouts aren't broken).
     meck:wait(2, kamock_heartbeat, handle_heartbeat_request, '_', ?WAIT_TIMEOUT_MS),
 
-    ?assertMatch({follower, _}, sys:get_state(R)),
+    ?assertMatch(#{role := follower}, kafine_eager_rebalance:info(R)),
 
-    ?assert(meck:called(test_membership_callback, subscribe_partitions, '_')),
+    ?assert(meck:called(test_subscription_callback, subscribe_partitions, '_')),
 
     telemetry:detach(TelemetryRef),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -211,30 +216,32 @@ coordinator_not_available() ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    % Default is that we're the leader.
-
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        ?GROUP_ID,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined}
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
     ),
+
+    % Default is that we're the leader.
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     receive
         {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
     end,
 
-    ?assertMatch({leader, _}, sys:get_state(R)),
+    ?assertMatch(#{role := leader}, kafine_eager_rebalance:info(R)),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -273,6 +280,20 @@ leader_with_new_member() ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
+    GroupId = ?GROUP_ID,
+    Topics = [?TOPIC_NAME],
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
+    ),
+
     meck:expect(
         kamock_join_group,
         handle_join_group_request,
@@ -280,20 +301,7 @@ leader_with_new_member() ->
     ),
 
     % TODO: There's quite a lot of shared setup here; can we jump start to 'leader' somehow?
-    GroupId = ?GROUP_ID,
-    Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        ?GROUP_ID,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
-    ),
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     receive
         {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
@@ -348,6 +356,9 @@ leader_with_new_member() ->
     telemetry:detach(TelemetryRef),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -359,23 +370,25 @@ follower_with_new_member() ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
+    GroupId = ?GROUP_ID,
+    Topics = [?TOPIC_NAME],
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
+    ),
+
     LeaderId = kamock_join_group:generate_member_id(<<"leader">>),
     setup_as_follower(LeaderId, ?TOPIC_NAME, [0, 1, 2, 3]),
 
-    GroupId = ?GROUP_ID,
-    Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        ?GROUP_ID,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
-    ),
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     % Wait until we're the follower
     receive
@@ -425,6 +438,9 @@ follower_with_new_member() ->
     telemetry:detach(TelemetryRef),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -445,24 +461,29 @@ not_coordinator() ->
 
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Bootstrap,
-        #{},
-        ?GROUP_ID,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Bootstrap, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, Topics, #{}, MembershipOptions
     ),
+
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, Topics, GroupId, MembershipOptions),
 
     receive
         {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
     end,
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_cluster:stop(Cluster),
     ok.
 
@@ -503,6 +524,10 @@ setup_not_coordinator(Coordinator = #{node_id := CoordinatorId}) ->
     ).
 
 offset_commit() ->
+    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
+        [kafine, rebalance, leader]
+    ]),
+
     % Start mock broker
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
@@ -512,25 +537,31 @@ offset_commit() ->
     GroupId = ?GROUP_ID,
     Partition = 0,
     CommitOffset = 1,
-    {ok, R} = kafine_eager_rebalance:start_link(
-        Ref,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined}
-        },
-        [TopicName]
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, [TopicName], #{}, MembershipOptions
     ),
+
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, [TopicName], GroupId, MembershipOptions),
+    % wait until rebalance has completed
+    receive
+        {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
+    end,
+
     % Commit offset 1 on partition 0
     Offsets = #{TopicName => #{Partition => CommitOffset}},
     % Check that the request went through without error
-    #{
-        topics := [
-            #{name := TopicName, partitions := [#{error_code := ?NONE, partition_index := 0}]}
-        ]
-    } = kafine_eager_rebalance:offset_commit(Ref, Offsets),
+    ?assertEqual(
+        {ok, #{TopicName => #{Partition => ok}}, 0},
+        kafine_eager_rebalance:offset_commit(Ref, Offsets)
+    ),
     % We expect the broker to receive the above as a request
     meck:wait(
         kamock_offset_commit,
@@ -540,6 +571,9 @@ offset_commit() ->
     ),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -581,19 +615,19 @@ multiple_assignors() ->
 
     TopicName = ?TOPIC_NAME,
     GroupId = ?GROUP_ID,
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined},
-            assignors => [test_assignor, test_assignor2]
-        },
-        [TopicName]
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor, test_assignor2]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF, GroupId, [TopicName], #{}, MembershipOptions
     ),
+
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, [TopicName], GroupId, MembershipOptions),
 
     % Wait for the rebalance to complete.
     (fun() ->
@@ -652,5 +686,8 @@ multiple_assignors() ->
     telemetry:detach(TelemetryRef),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.

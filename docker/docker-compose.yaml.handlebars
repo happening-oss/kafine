@@ -16,7 +16,6 @@ services:
           -Dcom.sun.management.jmxremote.authenticate=false
           -Dcom.sun.management.jmxremote.ssl=false
           -Djava.rmi.server.hostname=localhost
-          -Djava.net.preferIPv4Stack=true
           -javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
       {{/if}}
     volumes:
@@ -34,9 +33,9 @@ services:
       - KAFKA_BROKER_ID={{id}}
       # Listen on a docker-internal address, and all-zeros.
       # The EXTERNAL_LISTENER_ADDR must be the host's IP address (run ./get-host-ip.sh)
-      - KAFKA_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://0.0.0.0:{{port}},SSL://0.0.0.0:{{ssl_port}}
-      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:{{port}},SSL://${EXTERNAL_LISTENER_ADDR}:{{ssl_port}}
-      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL
+      - KAFKA_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://0.0.0.0:{{port}},SSL://0.0.0.0:{{ssl_port}},SASL://0.0.0.0:{{sasl_port}}
+      - KAFKA_ADVERTISED_LISTENERS=INTER://kafka-{{../name}}-{{id}}:29090,PLAINTEXT://${EXTERNAL_LISTENER_ADDR}:{{port}},SSL://${EXTERNAL_LISTENER_ADDR}:{{ssl_port}},SASL://${EXTERNAL_LISTENER_ADDR}:{{sasl_port}}
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTER:PLAINTEXT,PLAINTEXT:PLAINTEXT,SSL:SSL,SASL:SASL_PLAINTEXT
       - KAFKA_INTER_BROKER_LISTENER_NAME=INTER
       - KAFKA_SSL_CLIENT_AUTH=required
       - KAFKA_SSL_KEYSTORE_FILENAME=kafka-{{../name}}-{{id}}.keystore.jks
@@ -44,6 +43,9 @@ services:
       - KAFKA_SSL_TRUSTSTORE_FILENAME=kafka-{{../name}}-{{id}}.truststore.jks
       - KAFKA_SSL_TRUSTSTORE_CREDENTIALS=kafka-{{../name}}-{{id}}_truststore_creds
       - KAFKA_SSL_KEY_CREDENTIALS=kafka-{{../name}}-{{id}}_sslkey_creds
+      - KAFKA_SASL_ENABLED_MECHANISMS=SCRAM-SHA-256,PLAIN
+      - KAFKA_LISTENER_NAME_SASL_PLAIN_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required user_admin="secret";
+      - KAFKA_LISTENER_NAME_SASL_SCRAM-SHA-256_SASL_JAAS_CONFIG=org.apache.kafka.common.security.scram.ScramLoginModule required;
       # The rack-aware selector attempts to spread replicas so that no two replicas are in the same rack.
       - KAFKA_REPLICA_SELECTOR_CLASS=org.apache.kafka.common.replica.RackAwareReplicaSelector
       - KAFKA_BROKER_RACK={{rack}}
@@ -64,7 +66,6 @@ services:
           -Dcom.sun.management.jmxremote.authenticate=false
           -Dcom.sun.management.jmxremote.ssl=false
           -Djava.rmi.server.hostname=localhost
-          -Djava.net.preferIPv4Stack=true
       - EXTRA_ARGS=-javaagent:/home/prometheus/jmx_prometheus_javaagent-0.19.0.jar=9102:/home/prometheus/config.yaml
       {{/if}}
     volumes:
@@ -73,12 +74,13 @@ services:
     ports:
       - "{{port}}:{{port}}"
       - "{{ssl_port}}:{{ssl_port}}"
+      - "{{sasl_port}}:{{sasl_port}}"
   {{/each}}
 {{/each}}
 
   kafka-ui:
     container_name: kafka-ui
-    image: ghcr.io/kafbat/kafka-ui:v1.2.0
+    image: ghcr.io/kafbat/kafka-ui:v1.4.2
     environment:
       - SPRING_CONFIG_ADDITIONAL-LOCATION=/kafka-ui.yaml
     ports:
@@ -89,15 +91,15 @@ services:
   {{#if monitoring_enabled}}
   prometheus:
     container_name: prometheus
-    image: prom/prometheus:v3.4.2
+    image: prom/prometheus:v3.9.1
     ports:
       - "9090:9090"
     volumes:
-      - ./prometheus.yml~:/etc/prometheus/prometheus.yml
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
 
   grafana:
     container_name: grafana
-    image: grafana/grafana:12.0.2
+    image: grafana/grafana:12.3.2
     ports:
       - "3000:3000"
     environment:

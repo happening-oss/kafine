@@ -1,6 +1,6 @@
 -module(kafine_fetch_response_partition_data).
 -moduledoc false.
--export([fold/5]).
+-export([fold/5, find_next_offset/1]).
 
 %% See the module comments in kafine_fetch_response.erl
 
@@ -105,7 +105,7 @@ fold_record_batch(
         FetchOffset, BaseOffset, LastOffsetDelta, BaseOffset + LastOffsetDelta
     ]),
 
-    fold_records(
+    {Cont, {NextOffset, State2, StateData2}} = fold_records(
         Topic,
         PartitionIndex,
         RecordBatch,
@@ -113,7 +113,18 @@ fold_record_batch(
         FetchOffset,
         Callback,
         StateData
-    ).
+    ),
+
+    case Cont of
+        halt ->
+            % Consumer asked us to halt, resuming should be from the offset immediately after we
+            % halted (NextOffset).
+            {Cont, {NextOffset, State2, StateData2}};
+        cont ->
+            % We've processed the entire batch, the next offset should be based on the batch's
+            % reported last offset delta
+            {Cont, {BaseOffset + LastOffsetDelta + 1, State2, StateData2}}
+    end.
 
 fold_records(
     Topic,
@@ -245,3 +256,20 @@ reduce_while_(Fun, {cont, Acc}, [Elem | Rest]) ->
     reduce_while_(Fun, Fun(Elem, Acc), Rest);
 reduce_while_(_Fun, Result = {halt, _Acc}, _List) ->
     Result.
+
+find_next_offset(
+    #{records := []}
+) ->
+    % No records, no next offset
+    undefined;
+find_next_offset(
+    #{records := RecordBatches}
+) ->
+    lists:max(
+        lists:map(
+            fun(#{base_offset := BaseOffset, last_offset_delta := LastOffsetDelta}) ->
+                BaseOffset + LastOffsetDelta
+            end,
+            RecordBatches
+        )
+    ) + 1.

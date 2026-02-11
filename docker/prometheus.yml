@@ -16,4 +16,5 @@ scrape_configs:
           - kafka-extra-203:9102
   - job_name: "host"
     static_configs:
-      - targets: []
+      - targets:
+          - host.docker.internal:8099

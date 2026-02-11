@@ -23,6 +23,7 @@ suite() ->
         io_lib:format("~s_~s_~s", [?MODULE, ?FUNCTION_NAME, base64url:encode(rand:bytes(6))])
     )
 ).
+-define(FETCHER_METADATA, #{}).
 
 parse_broker(Broker) when is_list(Broker) ->
     [Host, Port] = string:split(Broker, ":"),
@@ -42,9 +43,13 @@ single_topic(_Config) ->
         #{client_id => ?CLIENT_ID},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{TopicName => #{}}
+        #{TopicName => #{}},
+        ?FETCHER_METADATA
     ),
 
     % Produce a message.
@@ -57,7 +62,7 @@ single_topic(_Config) ->
 
 latest_offset(_Config) ->
     TelemetryRef = telemetry_test:attach_event_handlers(self(), [
-        [kafine, node_consumer, connected]
+        [kafine, node_fetcher, fetch]
     ]),
 
     BootstrapServer = ct:get_config(bootstrap_server),
@@ -76,13 +81,23 @@ latest_offset(_Config) ->
         #{client_id => ?CLIENT_ID},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}},
+        ?FETCHER_METADATA
     ),
-    % Give us some time to allow the consumer to start before producing another message
+    % Wait until all nodes are fetching before producing another message
     receive
-        {[kafine, node_consumer, connected], TelemetryRef, #{}, #{}} -> ok
+        {[kafine, node_fetcher, fetch], TelemetryRef, #{}, #{node_id := 101}} -> ok
+    end,
+    receive
+        {[kafine, node_fetcher, fetch], TelemetryRef, #{}, #{node_id := 102}} -> ok
+    end,
+    receive
+        {[kafine, node_fetcher, fetch], TelemetryRef, #{}, #{node_id := 103}} -> ok
     end,
 
     % Produce another message.
@@ -148,9 +163,13 @@ nonzero_offset(_Config) ->
         #{},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => earliest, offset_reset_policy => earliest}}
+        #{TopicName => #{initial_offset => earliest, offset_reset_policy => earliest}},
+        ?FETCHER_METADATA
     ),
 
     eventually:assert(

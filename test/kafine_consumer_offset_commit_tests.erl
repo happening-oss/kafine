@@ -5,6 +5,7 @@
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
+-define(FETCHER_METADATA, #{}).
 -define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, {state, ?MODULE}).
 -define(HEARTBEAT_INTERVAL_MS, 30).
@@ -16,6 +17,8 @@ all_test_() ->
     ]}.
 
 setup() ->
+    {ok, _} = application:ensure_all_started(kafine),
+
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
     meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
@@ -31,13 +34,15 @@ setup() ->
     ok.
 
 cleanup(_) ->
-    meck:unload().
+    meck:unload(),
+    application:stop(kafine),
+    ok.
 
 offset_commit_from_consumer_callback() ->
     % It should be possible to call offset commit from the consumer callback.
     TopicName = ?TOPIC_NAME,
     Partitions = [0, 1, 2, 3],
-    Ref = make_ref(),
+    Ref = ?CONSUMER_REF,
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
@@ -78,31 +83,22 @@ offset_commit_from_consumer_callback() ->
         end
     ),
 
-    {ok, Consumer} = kafine_consumer:start_link(
+    GroupId = ?GROUP_ID,
+    Topics = [TopicName],
+    {ok, _} = kafine:start_group_consumer(
         ?CONSUMER_REF,
         Broker,
         #{},
-        {test_consumer_callback, ?CALLBACK_ARGS},
-        #{}
-    ),
-
-    GroupId = ?GROUP_ID,
-    Topics = [TopicName],
-    TopicOptions = #{},
-    {ok, Rebalance} = kafine_eager_rebalance:start_link(
-        Ref,
-        Broker,
-        #{},
         GroupId,
+        #{heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS},
+        #{},
         #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback =>
-                {kafine_group_consumer_subscription_callback, [
-                    Consumer, GroupId, Topics, TopicOptions, kafine_group_consumer_offset_callback
-                ]},
-            assignment_callback => {test_assignment_callback, undefined}
+            callback_mod => test_consumer_callback,
+            callback_arg => undefined
         },
-        [TopicName]
+        Topics,
+        #{},
+        ?FETCHER_METADATA
     ),
 
     meck:wait(4, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
@@ -113,7 +109,6 @@ offset_commit_from_consumer_callback() ->
         lists:sort(ets:tab2list(committed_offsets))
     ),
 
-    kafine_eager_rebalance:stop(Rebalance),
-    kafine_consumer:stop(Consumer),
+    kafine:stop_group_consumer(?CONSUMER_REF),
     kamock_broker:stop(Broker),
     ok.

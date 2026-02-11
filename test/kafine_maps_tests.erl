@@ -177,7 +177,8 @@ take2_test_() ->
             )},
 
         {"key doesn't exist", ?_assertEqual(error, kafine_maps:take([x], #{a => #{b => v}}))},
-        {"key doesn't exist", ?_assertEqual(error, kafine_maps:take([a, x], #{a => #{b => v}}))}
+        {"key doesn't exist", ?_assertEqual(error, kafine_maps:take([a, x], #{a => #{b => v}}))},
+        {"parent key doesn't exist", ?_assertEqual(error, kafine_maps:take([x, b], #{a => #{b => v}}))}
     ].
 
 get1_test_() ->

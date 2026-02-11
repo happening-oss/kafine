@@ -37,7 +37,8 @@ ok = logger:add_primary_filter(
 ),
 ```
 """).
--spec connection_errors(logger:log_event(), Options :: warn | stop) -> logger:filter_return().
+-spec connection_errors(logger:log_event(), Options :: logger:filter_arg()) ->
+    logger:filter_return().
 connection_errors(
     LogEvent = #{
         level := error,

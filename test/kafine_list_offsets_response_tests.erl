@@ -1,38 +1,39 @@
 -module(kafine_list_offsets_response_tests).
 -include_lib("eunit/include/eunit.hrl").
-
 -include_lib("kafcod/include/error_code.hrl").
 
--include("src/consumer/kafine_topic_partition_state.hrl").
+-include("assert_meck.hrl").
+
+-define(JOB_ID, 3).
+-define(NODE_ID, 102).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
-        fun fold/0,
-        fun unsubscribed/0,
-        fun fold_negative/0
+        fun handle_response/0,
+        fun handle_response_with_replay_request/0
     ]}.
 
 setup() ->
-    meck:new(test_offset_reset_policy, [non_strict]),
+    meck:new(kafine_fetcher, [stub_all]),
     ok.
 
 cleanup(_) ->
     meck:unload(),
     ok.
 
-fold() ->
-    TopicPartitionStates = #{
+handle_response() ->
+    RequestedOffsets = #{
         <<"cats">> => #{
-            61 => #topic_partition_state{offset = 34},
-            62 => #topic_partition_state{offset = 75}
+            61 => 34,
+            62 => 75
         },
         <<"dogs">> => #{
-            61 => #topic_partition_state{offset = 48},
-            62 => #topic_partition_state{offset = 54}
+            61 => 48,
+            62 => 54
         },
         <<"fish">> => #{
-            61 => #topic_partition_state{offset = 68},
-            62 => #topic_partition_state{offset = 78}
+            61 => 68,
+            62 => 78
         }
     },
 
@@ -64,62 +65,44 @@ fold() ->
         ]
     },
 
-    ?assertMatch(
-        #{
-            <<"cats">> := #{
-                61 := #topic_partition_state{offset = 44},
-                62 := #topic_partition_state{offset = 75}
-            },
-            <<"dogs">> := #{
-                61 := #topic_partition_state{offset = 52},
-                62 := #topic_partition_state{offset = 54}
-            },
-            <<"fish">> := #{
-                61 := #topic_partition_state{offset = 68},
-                62 := #topic_partition_state{offset = 90}
-            }
-        },
-        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
+    ok = kafine_list_offsets:handle_response(
+        ListOffsetsResponse, RequestedOffsets, ?JOB_ID, ?NODE_ID, self()
     ),
-    ok.
 
-unsubscribed() ->
-    TopicPartitionStates = #{
-        <<"cats">> => #{
-            61 => #topic_partition_state{offset = 34}
-        }
-    },
-
-    ListOffsetsResponse = #{
-        topics => [
+    ?assertCalled(
+        kafine_fetcher,
+        complete_job,
+        [
+            self(),
+            ?JOB_ID,
+            ?NODE_ID,
             #{
-                name => <<"cats">>,
-                partitions => [
-                    #{partition_index => 61, error_code => ?NONE, offset => 44},
-                    #{partition_index => 62, error_code => ?NONE, offset => 75}
-                ]
+                <<"cats">> => #{
+                    61 => {update_offset, 44},
+                    62 => {update_offset, 75}
+                },
+                <<"dogs">> => #{
+                    61 => {update_offset, 52},
+                    62 => {update_offset, 54}
+                },
+                <<"fish">> => #{
+                    61 => {update_offset, 68},
+                    62 => {update_offset, 90}
+                }
             }
         ]
-    },
-    ?assertMatch(
-        #{
-            <<"cats">> := #{
-                61 := #topic_partition_state{offset = 44}
-            }
-        },
-        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
     ),
     ok.
 
-fold_negative() ->
-    TopicPartitionStates = #{
+handle_response_with_replay_request() ->
+    RequestedOffsets = #{
         <<"cats">> => #{
-            61 => #topic_partition_state{offset = -5},
-            62 => #topic_partition_state{offset = -5}
+            61 => -5,
+            62 => -5
         },
         <<"dogs">> => #{
-            61 => #topic_partition_state{offset = -10},
-            62 => #topic_partition_state{offset = -10}
+            61 => -10,
+            62 => -10
         }
     },
 
@@ -144,17 +127,27 @@ fold_negative() ->
         ]
     },
 
-    ?assertMatch(
-        #{
-            <<"cats">> := #{
-                61 := #topic_partition_state{offset = 5},
-                62 := #topic_partition_state{offset = 0}
-            },
-            <<"dogs">> := #{
-                61 := #topic_partition_state{offset = 0},
-                62 := #topic_partition_state{offset = 0}
+    ok = kafine_list_offsets:handle_response(
+        ListOffsetsResponse, RequestedOffsets, ?JOB_ID, ?NODE_ID, self()
+    ),
+
+    ?assertCalled(
+        kafine_fetcher,
+        complete_job,
+        [
+            self(),
+            ?JOB_ID,
+            ?NODE_ID,
+            #{
+                <<"cats">> => #{
+                    61 => {update_offset, 5},
+                    62 => {update_offset, 0}
+                },
+                <<"dogs">> => #{
+                    61 => {update_offset, 0},
+                    62 => {update_offset, 0}
+                }
             }
-        },
-        kafine_list_offsets_response:fold(ListOffsetsResponse, TopicPartitionStates)
+        ]
     ),
     ok.

@@ -2,6 +2,7 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("public_key/include/public_key.hrl").
 
+% For 'tbsCertificate', 'rdnSequence', etc. in the certificate assertion below.
 -elvis([{elvis_style, atom_naming_convention, disable}]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
@@ -76,7 +77,7 @@ connect_ok(#{
     } = public_key:pkix_decode_cert(PeerCertDer, otp),
     ?assertEqual(
         {rdnSequence, [
-            [{'AttributeTypeAndValue', ?'id-at-commonName', {printableString, "client"}}]
+            [{'AttributeTypeAndValue', ?'id-at-commonName', {utf8String, <<"client">>}}]
         ]},
         PeerSubject
     ),

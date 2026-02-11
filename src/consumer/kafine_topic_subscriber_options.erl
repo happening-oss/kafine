@@ -3,6 +3,15 @@
     validate_options/1
 ]).
 
+-export_type([t/0]).
+
+-type t() :: #{
+    subscription_callback := {module(), term()},
+    assignment_callback := {module(), term()}
+}.
+
+-spec validate_options(map()) -> t().
+
 validate_options(Options) ->
     kafine_options:validate_options(
         Options,

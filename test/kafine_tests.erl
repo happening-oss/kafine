@@ -1,6 +1,8 @@
 -module(kafine_tests).
 %%% Tests for the high-level API in kafine.erl
 -include_lib("eunit/include/eunit.hrl").
+-include("assert_meck.hrl").
+-include("assert_received.hrl").
 
 -define(CLUSTER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME_1, iolist_to_binary(io_lib:format("~s___~s_1_t", [?MODULE, ?FUNCTION_NAME]))).
@@ -14,6 +16,7 @@
 -define(CONNECTION_OPTIONS, #{}).
 -define(CONSUMER_OPTIONS, #{}).
 -define(SUBSCRIBER_OPTIONS, #{}).
+-define(FETCHER_METADATA, #{}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -63,9 +66,13 @@ start_topic_consumer() ->
         ?CONNECTION_OPTIONS,
         ?CONSUMER_OPTIONS,
         ?SUBSCRIBER_OPTIONS,
-        {test_consumer_callback, ?CALLBACK_ARGS},
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS
+        },
         [?TOPIC_NAME_1, ?TOPIC_NAME_2],
-        #{}
+        #{},
+        ?FETCHER_METADATA
     ),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
@@ -111,26 +118,37 @@ start_topic_consumer_latest() ->
         ?CONNECTION_OPTIONS,
         ?CONSUMER_OPTIONS,
         ?SUBSCRIBER_OPTIONS,
-        {test_consumer_callback, ?CALLBACK_ARGS},
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS
+        },
         [?TOPIC_NAME_1, ?TOPIC_NAME_2],
         #{
             ?TOPIC_NAME_1 => #{initial_offset => latest},
             ?TOPIC_NAME_2 => #{initial_offset => latest}
-        }
+        },
+        ?FETCHER_METADATA
     ),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
     meck:wait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
 
-    % We should see only one ListOffsets request, which should contain all 8 partitions.
-    meck:wait(kamock_list_offsets, handle_list_offsets_request, '_', ?WAIT_TIMEOUT_MS),
-    ListOffsetsRequest = meck:capture(
-        last, kamock_list_offsets, handle_list_offsets_request, '_', 1
-    ),
-    % 2 topics, each with 4 partitions.
-    ?assertMatch(
-        #{topics := [#{partitions := [_, _, _, _]}, #{partitions := [_, _, _, _]}]},
-        ListOffsetsRequest
+    % Offsets for each topic and partition should be requested
+    lists:foreach(
+        fun(Topic) ->
+            lists:foreach(
+                fun(Partition) ->
+                    meck:wait(
+                        kamock_list_offsets,
+                        handle_list_offsets_request,
+                        [is_list_offsets_request(Topic, Partition), '_'],
+                        ?WAIT_TIMEOUT_MS
+                    )
+                end,
+                lists:seq(0, 3)
+            )
+        end,
+        [?TOPIC_NAME_1, ?TOPIC_NAME_2]
     ),
 
     % There should be at least one fetch (which will return empty).
@@ -155,7 +173,27 @@ start_topic_consumer_latest() ->
     ok.
 
 start_group_consumer() ->
+    telemetry_test:attach_event_handlers(self(), [[kafine, rebalance, stop]]),
+
     {ok, Cluster, _Brokers = [Bootstrap | _]} = kamock_cluster:start(?CLUSTER_REF),
+
+    {ok, Coordinator} = kamock_coordinator:start(make_ref(), #{initial_rebalance_delay_ms => 100}),
+    meck:new(kamock_join_group, [passthrough]),
+    meck:new(kamock_sync_group, [passthrough]),
+    meck:new(kamock_leave_group, [passthrough]),
+    meck:new(kamock_heartbeat, [passthrough]),
+    meck:expect(
+        kamock_join_group, handle_join_group_request, kamock_coordinator:join_group(Coordinator)
+    ),
+    meck:expect(
+        kamock_sync_group, handle_sync_group_request, kamock_coordinator:sync_group(Coordinator)
+    ),
+    meck:expect(
+        kamock_leave_group, handle_leave_group_request, kamock_coordinator:leave_group(Coordinator)
+    ),
+    meck:expect(
+        kamock_heartbeat, handle_heartbeat_request, kamock_coordinator:heartbeat(Coordinator)
+    ),
 
     FirstOffset = 0,
     LastOffset = 2,
@@ -178,9 +216,13 @@ start_group_consumer() ->
         ?GROUP_ID,
         ?CONSUMER_OPTIONS,
         ?SUBSCRIBER_OPTIONS,
-        {test_consumer_callback, ?CALLBACK_ARGS},
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS
+        },
         [?TOPIC_NAME_1, ?TOPIC_NAME_2],
-        #{}
+        #{},
+        ?FETCHER_METADATA
     ),
 
     {ok, _Consumer2} = kafine:start_group_consumer(
@@ -190,10 +232,16 @@ start_group_consumer() ->
         ?GROUP_ID,
         ?CONSUMER_OPTIONS,
         ?SUBSCRIBER_OPTIONS,
-        {test_consumer_callback, ?CALLBACK_ARGS},
+        #{
+            callback_mod => test_consumer_callback,
+            callback_arg => ?CALLBACK_ARGS
+        },
         [?TOPIC_NAME_1, ?TOPIC_NAME_2],
-        #{}
+        #{},
+        ?FETCHER_METADATA
     ),
+
+    ?assertReceived({[kafine, rebalance, stop], _, _, _}),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
     meck:wait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
@@ -203,9 +251,26 @@ start_group_consumer() ->
     TopicCount = 2,
     PartitionCount = 4,
     ExpectedRecordCount = TopicCount * PartitionCount * 2,
-    meck:wait(ExpectedRecordCount, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    ?assertWait(ExpectedRecordCount, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
 
     kafine:stop_group_consumer(?CONSUMER_REF_1),
     kafine:stop_group_consumer(?CONSUMER_REF_2),
     kamock_cluster:stop(Cluster),
     ok.
+
+
+is_list_offsets_request(Topic, Partition) ->
+    meck:is(
+        fun(#{topics := Topics}) ->
+            lists:any(
+                fun(#{name := T, partitions := Partitions}) ->
+                    T =:= Topic andalso
+                    lists:any(
+                        fun(#{partition_index := PI}) -> PI == Partition end,
+                        Partitions
+                    )
+                end,
+                Topics
+            )
+        end
+    ).

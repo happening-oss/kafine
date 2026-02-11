@@ -5,6 +5,8 @@
     verify_callbacks_exported/2
 ]).
 
+-include("kafine_eqwalizer.hrl").
+
 verify_callbacks_exported(Behaviour, Module) when is_atom(Behaviour), is_atom(Module) ->
     % Load the specified module and behaviour.
     ensure_module_loaded(Behaviour),
@@ -51,16 +53,11 @@ verify_callbacks_exported(Behaviour, Module, RequiredCallbacks, Exports) ->
 -type function_name() :: atom().
 
 -spec get_callbacks(Behaviour :: module()) -> [{function_name(), arity()}].
-get_callbacks(Behaviour) -> delete_type_(apply(Behaviour, behaviour_info, [callbacks])).
+get_callbacks(Behaviour) -> ?DYNAMIC_CAST(apply(Behaviour, behaviour_info, [callbacks])).
 
 -spec get_optional_callbacks(Behaviour :: module()) -> [{function_name(), arity()}].
 get_optional_callbacks(Behaviour) ->
-    delete_type_(apply(Behaviour, behaviour_info, [optional_callbacks])).
-
-% Workaround: eqwalizer thinks that apply() returns `term()` and refuses to accept that it might return anything else.
-delete_type_(Value) ->
-    % The underscore suffix in the name means "ugly".
-    Value.
+    ?DYNAMIC_CAST(apply(Behaviour, behaviour_info, [optional_callbacks])).
 
 ensure_module_loaded(Module) ->
     case erlang:module_loaded(Module) of

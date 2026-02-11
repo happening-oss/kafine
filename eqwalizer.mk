@@ -1,4 +1,4 @@
-EQWALIZER_RELEASE_VSN := 2025-07-08
+EQWALIZER_RELEASE_VSN := 2025-12-12
 EQWALIZER_OTP_VSN := 27.3
 
 ERLANG_MK_TMP = $(shell TERM=dumb QUIET=1 REBAR_PROFILE=eqwalizer rebar3 path --base)
@@ -31,3 +31,7 @@ $(EQWALIZER_ELP): $(EQWALIZER_TAR_GZ)
 	tar -C $(EQWALIZER_TMP) -xz -f $(EQWALIZER_TAR_GZ)
 	# Set the tarball to match the binary, so we don't keep unpacking it.
 	touch -r $(EQWALIZER_ELP) $(EQWALIZER_TAR_GZ)
+
+clean-eqwalize::
+	-rm $(EQWALIZER_TAR_GZ)
+	-rm $(EQWALIZER_ELP)

@@ -11,4 +11,5 @@ scrape_configs:
 {{/each}}
   - job_name: "host"
     static_configs:
-      - targets: []
+      - targets:
+        - host.docker.internal:8099

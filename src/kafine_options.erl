@@ -5,10 +5,21 @@
     validate_options/5
 ]).
 
-validate_options(Options, Defaults, RequiredKeys, Strict) ->
+validate_options(Options, Defaults, RequiredKeys, Strict) when
+    is_map(Options),
+    is_map(Defaults),
+    is_list(RequiredKeys),
+    is_boolean(Strict)
+->
     validate_options(Options, Defaults, RequiredKeys, Strict, fun(_Key, _Value) -> ok end).
 
-validate_options(Options, Defaults, RequiredKeys, Strict, ValidateFun) ->
+validate_options(Options, Defaults, RequiredKeys, Strict, ValidateFun) when
+    is_map(Options),
+    is_map(Defaults),
+    is_list(RequiredKeys),
+    is_boolean(Strict),
+    is_function(ValidateFun, 2)
+->
     Options2 = maps:merge(Defaults, Options),
     case RequiredKeys -- maps:keys(Options2) of
         [] -> ok;

@@ -3,20 +3,14 @@ SHELL := bash
 EXTERNAL_LISTENER_ADDR=$(shell ../get-host-ip.sh)
 export EXTERNAL_LISTENER_ADDR
 
+brokers := \
+	kafka-default-101 kafka-default-102 kafka-default-103 \
+	kafka-default-104 kafka-default-105 kafka-default-106
+
 all: \
 	kafka-root.crt \
-	kafka-default-101.keystore.jks \
-	kafka-default-102.keystore.jks \
-	kafka-default-103.keystore.jks \
-	kafka-default-104.keystore.jks \
-	kafka-default-105.keystore.jks \
-	kafka-default-106.keystore.jks \
-	kafka-default-101.truststore.jks \
-	kafka-default-102.truststore.jks \
-	kafka-default-103.truststore.jks \
-	kafka-default-104.truststore.jks \
-	kafka-default-105.truststore.jks \
-	kafka-default-106.truststore.jks \
+	$(foreach broker,$(brokers),$(broker).keystore.jks) \
+	$(foreach broker,$(brokers),$(broker).truststore.jks) \
 	kafka-client.crt
 
 # It NEEDS a password, so we'll just use a fixed one.
@@ -67,6 +61,7 @@ kafka-client.crt: kafka-client.csr kafka-root.key kafka-root.crt
 	# sign the request; create server cert
 	openssl x509 -req \
 		-CA kafka-root.crt -CAkey kafka-root.key \
+		-CAcreateserial \
 		-days 90 \
 		-in "$*.csr" \
 		-extfile <(echo "subjectAltName=DNS:$*,DNS:localhost,IP:$(EXTERNAL_LISTENER_ADDR)") \

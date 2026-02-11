@@ -1,7 +1,7 @@
 -module(kafine_node_producer).
 -moduledoc false.
 -export([
-    start_link/2,
+    start_link/4,
     stop/1,
 
     reqids_new/0,
@@ -28,21 +28,26 @@
 -type request_id_collection() :: gen_statem:request_id_collection().
 -type start_ret() :: gen_statem:start_ret().
 -spec start_link(
-    Broker :: kafine:broker(),
-    ConnectionOptions :: kafine:connection_options()
+    Ref :: term(),
+    ConnectionOptions :: kafine:connection_options(),
+    Owner :: pid(),
+    Broker :: kafine:broker()
 ) ->
     start_ret().
 
 start_link(
-    Broker = #{host := _, port := _, node_id := _},
-    ConnectionOptions
-    % ConsumerOptions,
+    Ref,
+    ConnectionOptions,
+    Owner,
+    Broker = #{host := _, port := _, node_id := _}
 ) ->
     gen_statem:start_link(
         ?MODULE,
         [
-            Broker,
-            ConnectionOptions
+            Ref,
+            ConnectionOptions,
+            Owner,
+            Broker
         ],
         start_options()
     ).
@@ -107,13 +112,18 @@ callback_mode() ->
 }).
 
 init([
-    Broker = #{node_id := NodeId},
-    ConnectionOptions
+    Ref,
+    ConnectionOptions,
+    Owner = Owner,
+    Broker = #{node_id := NodeId}
 ]) ->
     process_flag(trap_exit, true),
-    Metadata = #{node_id => NodeId},
+    Metadata = #{ref => Ref, node_id => NodeId},
     logger:set_process_metadata(Metadata),
-    kafine_proc_lib:set_label({?MODULE, NodeId}),
+    kafine_proc_lib:set_label({?MODULE, Ref, NodeId}),
+
+    % Register ourselves with the producer proc
+    kafine_producer:set_node_producer(Owner, Broker, self()),
 
     StateData = #state{
         metadata = Metadata,
@@ -222,10 +232,13 @@ send_messages(
         fun produce_response:decode_produce_response_8/1,
         {produce, From},
         Pending,
-        kafine_request_telemetry:request_labels(?PRODUCE, 8)
+        request_metadata(?PRODUCE, 8)
     ),
     StateData#state{pending = Pending2}.
 
 encode_acks(none) -> ?ACK_NONE;
 encode_acks(leader) -> ?ACK_LEADER;
 encode_acks(full_isr) -> ?ACK_FULL_ISR.
+
+request_metadata(ApiKey, ApiVersion) ->
+    #{api_key => ApiKey, api_version => ApiVersion}.

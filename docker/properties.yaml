@@ -6,26 +6,32 @@ clusters:
       - id: 101
         port: 9092
         ssl_port: 9192
+        sasl_port: 9292
         rack: rack-a
       - id: 102
         port: 9093
         ssl_port: 9193
+        sasl_port: 9293
         rack: rack-b
       - id: 103
         port: 9094
         ssl_port: 9194
+        sasl_port: 9294
         rack: rack-c
       - id: 104
         port: 9095
         ssl_port: 9195
+        sasl_port: 9295
         rack: rack-a
       - id: 105
         port: 9096
         ssl_port: 9196
+        sasl_port: 9296
         rack: rack-b
       - id: 106
         port: 9097
         ssl_port: 9197
+        sasl_port: 9297
         rack: rack-c
   - name: extra
     zookeeper:
@@ -34,13 +40,16 @@ clusters:
       - id: 201
         port: 9292
         ssl_port: 9392
+        sasl_port: 9492
         rack: rack-c
       - id: 202
         port: 9293
         ssl_port: 9393
+        sasl_port: 9492
         rack: rack-c
       - id: 203
         port: 9294
         ssl_port: 9394
+        sasl_port: 9492
         rack: rack-c
 monitoring_enabled: true

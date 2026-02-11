@@ -2,17 +2,27 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kafcod/include/error_code.hrl").
 
+-include("assert_meck.hrl").
+
 -define(TOPIC_1, <<"topic1">>).
 -define(TOPIC_2, <<"topic2">>).
 -define(PARTITION_1, 61).
 -define(PARTITION_2, 62).
--define(TELEMETRY_METADATA, #{}).
+-define(JOB_ID, 6).
+-define(NODE_ID, 104).
 
 %% When we see multiple OFFSET_OUT_OF_RANGE errors, we want to issue only one ListOffsets request. The magic happens in
 %% the error handling, so let's make sure that keeps working.
 offset_out_of_range_errors_are_combined_test() ->
+    meck:new(kafine_fetcher, [stub_all]),
+
     % TopicPartitionStates is untouched if there are no records returned, so we don't need to initialise it.
-    TopicPartitionStates = undefined,
+    FetchInfo = #{
+        <<"topic">> => #{
+            61 => {1, dummy, undefined},
+            62 => {2, dummy, undefined}
+        }
+    },
 
     % Construct some fake partition data with two topics, each with two partitions, all with OFFSET_OUT_OF_RANGE errors.
     PartitionData = #{
@@ -48,22 +58,27 @@ offset_out_of_range_errors_are_combined_test() ->
         session_id => 0
     },
 
-    {_TopicPartitionStates2, Errors} = kafine_fetch_response:fold(
-        FetchResponse, TopicPartitionStates, ?TELEMETRY_METADATA
+    TopicOptions = #{
+        ?TOPIC_1 => #{offset_reset_policy => earliest},
+        ?TOPIC_2 => #{offset_reset_policy => latest}
+    },
+
+    ok = kafine_fetch:handle_response(
+        FetchResponse, FetchInfo, ?JOB_ID, ?NODE_ID, TopicOptions, self()
     ),
 
-    % The errors should be combined. Note that they're still a tuple-list at this point. They get converted again in
-    % kafine_node_consumer:collect_topic_partitions/1. Note also that the order isn't important and might change in
-    % future. Currently it's reversed from the FetchResponse, above.
-    ?assertEqual(
+    ?assertCalled(kafine_fetcher, complete_job, [
+        self(),
+        ?JOB_ID,
+        ?NODE_ID,
         #{
-            ?OFFSET_OUT_OF_RANGE => [
-                {?TOPIC_2, ?PARTITION_2},
-                {?TOPIC_2, ?PARTITION_1},
-                {?TOPIC_1, ?PARTITION_2},
-                {?TOPIC_1, ?PARTITION_1}
-            ]
-        },
-        Errors
-    ),
-    ok.
+            ?TOPIC_1 => #{
+                ?PARTITION_1 => {update_offset, earliest},
+                ?PARTITION_2 => {update_offset, earliest}
+            },
+            ?TOPIC_2 => #{
+                ?PARTITION_1 => {update_offset, latest},
+                ?PARTITION_2 => {update_offset, latest}
+            }
+        }
+    ]).

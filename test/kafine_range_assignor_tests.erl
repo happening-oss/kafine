@@ -10,7 +10,7 @@ one_consumer_no_topic_test() ->
             metadata => kafine_range_assignor:metadata([])
         }
     ],
-    TopicPartitions = [],
+    TopicPartitions = #{},
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(#{M1 => #{assigned_partitions => #{}, user_data => <<>>}}, Assignment),
     ok.
@@ -24,7 +24,7 @@ one_consumer_one_topic_test() ->
             metadata => kafine_range_assignor:metadata([<<"topic-a">>])
         }
     ],
-    TopicPartitions = [#{name => <<"topic-a">>, partitions => [0, 1, 2]}],
+    TopicPartitions = #{<<"topic-a">> => [0, 1, 2]},
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{M1 => #{assigned_partitions => #{<<"topic-a">> => [0, 1, 2]}, user_data => <<>>}},
@@ -41,10 +41,10 @@ one_consumer_multiple_topics_test() ->
             group_instance_id => null
         }
     ],
-    TopicPartitions = [
-        #{name => <<"topic-a">>, partitions => [0]},
-        #{name => <<"topic-b">>, partitions => [0, 1]}
-    ],
+    TopicPartitions = #{
+        <<"topic-a">> => [0],
+        <<"topic-b">> => [0, 1]
+    },
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{
@@ -71,7 +71,7 @@ two_consumers_one_topic_one_partition_test() ->
         }
      || M <- [M1, M2]
     ],
-    TopicPartitions = [#{name => <<"topic-a">>, partitions => [0]}],
+    TopicPartitions = #{<<"topic-a">> => [0]},
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{
@@ -93,7 +93,7 @@ two_consumers_one_topic_two_partitions_test() ->
         }
      || M <- [M1, M2]
     ],
-    TopicPartitions = [#{name => <<"topic-a">>, partitions => [0, 1]}],
+    TopicPartitions = #{<<"topic-a">> => [0, 1]},
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{
@@ -115,10 +115,10 @@ two_consumers_two_topics_six_partitions_test() ->
         }
      || M <- [M1, M2]
     ],
-    TopicPartitions = [
-        #{name => <<"topic-a">>, partitions => [0, 1, 2, 3, 4, 5]},
-        #{name => <<"topic-b">>, partitions => [0, 1, 2, 3, 4, 5]}
-    ],
+    TopicPartitions = #{
+        <<"topic-a">> => [0, 1, 2, 3, 4, 5],
+        <<"topic-b">> => [0, 1, 2, 3, 4, 5]
+    },
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{
@@ -142,10 +142,10 @@ multiple_consumers_mixed_topics_test() ->
         create_member(3, [<<"topic-a">>])
     ],
     [M1, M2, M3] = [M || #{member_id := M} <- Members],
-    TopicPartitions = [
-        #{name => <<"topic-a">>, partitions => [0, 1, 2]},
-        #{name => <<"topic-b">>, partitions => [0, 1]}
-    ],
+    TopicPartitions = #{
+        <<"topic-a">> => [0, 1, 2],
+        <<"topic-b">> => [0, 1]
+    },
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
     ?assertEqual(
         #{
@@ -173,11 +173,11 @@ multiple_consumers_mixed_topics_2_test() ->
         create_member(2, [<<"topic-a">>, <<"topic-c">>])
     ],
     [M1, M2] = [M || #{member_id := M} <- Members],
-    TopicPartitions = [
-        #{name => <<"topic-a">>, partitions => [0, 1, 2]},
-        #{name => <<"topic-b">>, partitions => [0, 1, 2]},
-        #{name => <<"topic-c">>, partitions => [0, 1, 2]}
-    ],
+    TopicPartitions = #{
+        <<"topic-a">> => [0, 1, 2],
+        <<"topic-b">> => [0, 1, 2],
+        <<"topic-c">> => [0, 1, 2]
+    },
     Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
 
     % M1 gets half of topic-a, all of topic-b; M2 gets the other half of topic-a, all of topic-c.

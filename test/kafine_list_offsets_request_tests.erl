@@ -4,20 +4,7 @@
 -include_lib("kafcod/include/timestamp.hrl").
 -include_lib("kafcod/include/isolation_level.hrl").
 
-all_test_() ->
-    {foreach, fun setup/0, fun cleanup/1, [
-        fun build_list_offsets_request/0
-    ]}.
-
-setup() ->
-    meck:new(test_offset_reset_policy, [non_strict]),
-    ok.
-
-cleanup(_) ->
-    meck:unload(),
-    ok.
-
-build_list_offsets_request() ->
+build_list_offsets_request_test() ->
     TopicPartitionTimestamps = #{
         <<"cats">> => #{61 => earliest, 62 => earliest},
         <<"dogs">> => #{51 => latest, 52 => latest},
@@ -25,7 +12,7 @@ build_list_offsets_request() ->
     },
     IsolationLevel = read_committed,
 
-    % The topics are in reverse order. This is an implementation detail and might change.
+    % The topics and partitions are in reverse order. This is an implementation detail and might change.
     Expected = #{
         isolation_level => ?READ_COMMITTED,
         replica_id => -1,
@@ -37,12 +24,12 @@ build_list_offsets_request() ->
                         #{
                             timestamp => ?LATEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 41
+                            partition_index => 42
                         },
                         #{
                             timestamp => ?LATEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 42
+                            partition_index => 41
                         }
                     ]
                 },
@@ -52,12 +39,12 @@ build_list_offsets_request() ->
                         #{
                             timestamp => ?LATEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 51
+                            partition_index => 52
                         },
                         #{
                             timestamp => ?LATEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 52
+                            partition_index => 51
                         }
                     ]
                 },
@@ -67,12 +54,12 @@ build_list_offsets_request() ->
                         #{
                             timestamp => ?EARLIEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 61
+                            partition_index => 62
                         },
                         #{
                             timestamp => ?EARLIEST_TIMESTAMP,
                             current_leader_epoch => -1,
-                            partition_index => 62
+                            partition_index => 61
                         }
                     ]
                 }
@@ -80,7 +67,7 @@ build_list_offsets_request() ->
     },
     ?assertEqual(
         Expected,
-        kafine_list_offsets_request:build_list_offsets_request(
+        kafine_list_offsets:build_request(
             TopicPartitionTimestamps, IsolationLevel
         )
     ),

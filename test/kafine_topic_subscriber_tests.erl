@@ -5,7 +5,7 @@
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(WAIT_TIMEOUT_MS, 2_000).
 -define(SUBSCRIBER_REF, subscriber).
--define(CALLBACK_STATE, undefined).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
@@ -23,6 +23,8 @@ setup() ->
     meck:expect(test_assignment_callback, before_assignment, fun(_, _, St) -> {ok, St} end),
     meck:expect(test_assignment_callback, after_assignment, fun(_, _, St) -> {ok, St} end),
 
+    meck:new(kafine_metadata_cache),
+
     meck:new(kamock_fetch, [passthrough]),
     meck:new(kamock_metadata, [passthrough]),
     ok.
@@ -35,25 +37,19 @@ subscription_callback_is_called() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
     Topics = [?TOPIC_NAME],
+
+    mock_metadata_cache:expect(?SUBSCRIBER_REF, Topics, [0, 1, 2, 3]),
+
     {ok, _R} = kafine_topic_subscriber:start_link(
         ?SUBSCRIBER_REF,
-        Broker,
-        #{},
+        Topics,
         #{
             subscription_callback => {test_subscription_callback, undefined},
             assignment_callback => {test_assignment_callback, undefined}
-        },
-        Topics
+        }
     ),
 
     timer:sleep(1000),
-
-    meck:wait(
-        kamock_metadata,
-        handle_metadata_request,
-        '_',
-        ?WAIT_TIMEOUT_MS
-    ),
 
     meck:wait(
         test_subscription_callback,

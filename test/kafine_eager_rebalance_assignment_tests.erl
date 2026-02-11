@@ -4,7 +4,7 @@
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, undefined).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(REBALANCE_REF_1, {?MODULE, ?FUNCTION_NAME, 1}).
 -define(REBALANCE_REF_2, {?MODULE, ?FUNCTION_NAME, 2}).
 -define(HEARTBEAT_INTERVAL_MS, 30).
@@ -20,10 +20,10 @@ all_test_() ->
     ]}.
 
 setup() ->
-    meck:new(test_membership_callback, [non_strict]),
-    meck:expect(test_membership_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_membership_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
-    meck:expect(test_membership_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
+    meck:new(test_subscription_callback, [non_strict]),
+    meck:expect(test_subscription_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
+    meck:expect(test_subscription_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
+    meck:expect(test_subscription_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
 
     meck:new(test_assignment_callback, [non_strict]),
     meck:expect(test_assignment_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
@@ -45,19 +45,18 @@ call_assignment_callbacks_after_join_leader() ->
 
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF_1,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
-            assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignors => [kafine_range_assignor]
-        },
-        Topics
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, ?CALLBACK_STATE},
+        assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
+        assignors => [kafine_range_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF_1, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF_1),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF_1, GroupId, Topics, #{}, MembershipOptions
     ),
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF_1, Topics, GroupId, MembershipOptions),
 
     % Wait for rebalance to complete
     receive
@@ -67,7 +66,7 @@ call_assignment_callbacks_after_join_leader() ->
     % Check we call the subscription callback
     ?assert(
         meck:called(
-            test_membership_callback,
+            test_subscription_callback,
             subscribe_partitions,
             [
                 '_',
@@ -94,6 +93,9 @@ call_assignment_callbacks_after_join_leader() ->
     ),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -109,19 +111,18 @@ call_assignments_callbacks_after_join_follower() ->
 
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
-    {ok, R} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF_1,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
-            assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignors => [kafine_range_assignor]
-        },
-        Topics
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, ?CALLBACK_STATE},
+        assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
+        assignors => [kafine_range_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF_1, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF_1),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF_1, GroupId, Topics, #{}, MembershipOptions
     ),
+    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF_1, Topics, GroupId, MembershipOptions),
 
     % Wait for rebalance to complete
     receive
@@ -131,7 +132,7 @@ call_assignments_callbacks_after_join_follower() ->
     % Check we call the subscription callback
     ?assert(
         meck:called(
-            test_membership_callback,
+            test_subscription_callback,
             subscribe_partitions,
             [
                 '_',
@@ -158,6 +159,9 @@ call_assignments_callbacks_after_join_follower() ->
     ),
 
     kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 
@@ -194,18 +198,19 @@ call_assignment_callbacks_after_rebalance() ->
     % Start one group member,
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, ?CALLBACK_STATE},
+        assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
+        assignors => [kafine_range_assignor]
+    }),
+    {ok, B1} = kafine_bootstrap:start_link(?REBALANCE_REF_1, Broker, #{}),
+    {ok, M1} = kafine_metadata_cache:start_link(?REBALANCE_REF_1),
+    {ok, C1} = kafine_coordinator:start_link(
+        ?REBALANCE_REF_1, GroupId, Topics, #{client_id => <<"member-1">>}, MembershipOptions
+    ),
     {ok, FirstGroupMember} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF_1,
-        Broker,
-        #{client_id => <<"member-1">>},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
-            assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignors => [kafine_range_assignor]
-        },
-        Topics
+        ?REBALANCE_REF_1, Topics, GroupId, MembershipOptions
     ),
 
     % Wait for initial rebalance to complete
@@ -264,18 +269,13 @@ call_assignment_callbacks_after_rebalance() ->
     ]),
 
     % Start second consumer member
+    {ok, B2} = kafine_bootstrap:start_link(?REBALANCE_REF_2, Broker, #{}),
+    {ok, M2} = kafine_metadata_cache:start_link(?REBALANCE_REF_2),
+    {ok, C2} = kafine_coordinator:start_link(
+        ?REBALANCE_REF_2, GroupId, Topics, #{client_id => <<"member-2">>}, MembershipOptions
+    ),
     {ok, SecondGroupMember} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF_2,
-        Broker,
-        #{client_id => <<"member-2">>},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
-            assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignors => [kafine_range_assignor]
-        },
-        Topics
+        ?REBALANCE_REF_2, Topics, GroupId, MembershipOptions
     ),
 
     meck:expect(
@@ -322,6 +322,12 @@ call_assignment_callbacks_after_rebalance() ->
 
     kafine_eager_rebalance:stop(FirstGroupMember),
     kafine_eager_rebalance:stop(SecondGroupMember),
+    kafine_coordinator:stop(C1),
+    kafine_coordinator:stop(C2),
+    kafine_metadata_cache:stop(M1),
+    kafine_metadata_cache:stop(M2),
+    kafine_bootstrap:stop(B1),
+    kafine_bootstrap:stop(B2),
     kamock_broker:stop(Broker),
     ok.
 
@@ -338,18 +344,19 @@ assignment_callbacks_are_called_from_long_lived_process() ->
 
     GroupId = ?GROUP_ID,
     Topics = [?TOPIC_NAME],
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, ?CALLBACK_STATE},
+        assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
+        assignors => [kafine_range_assignor]
+    }),
+    {ok, B} = kafine_bootstrap:start_link(?REBALANCE_REF_1, Broker, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(?REBALANCE_REF_1),
+    {ok, C} = kafine_coordinator:start_link(
+        ?REBALANCE_REF_1, GroupId, Topics, #{}, MembershipOptions
+    ),
     {ok, RebalancerPid} = kafine_eager_rebalance:start_link(
-        ?REBALANCE_REF_1,
-        Broker,
-        #{},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, ?CALLBACK_STATE},
-            assignment_callback => {test_assignment_callback, ?CALLBACK_STATE},
-            assignors => [kafine_range_assignor]
-        },
-        Topics
+        ?REBALANCE_REF_1, Topics, GroupId, MembershipOptions
     ),
 
     % Wait for rebalance to complete
@@ -371,6 +378,9 @@ assignment_callbacks_are_called_from_long_lived_process() ->
     ),
 
     kafine_eager_rebalance:stop(RebalancerPid),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
 

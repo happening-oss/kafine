@@ -20,6 +20,7 @@ suite() ->
         io_lib:format("~s_~s_~s", [?MODULE, ?FUNCTION_NAME, base64url:encode(rand:bytes(6))])
     )
 ).
+-define(FETCHER_METADATA, #{}).
 
 parse_broker(Broker) when is_list(Broker) ->
     [Host, Port] = string:split(Broker, ":"),
@@ -41,9 +42,14 @@ virgin_topic(_Config) ->
         #{},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
+        #{
+            callback_mod => topic_consumer_parity_callback,
+            callback_arg => {topic_consumer_history_callback, History},
+            skip_empty_fetches => after_first
+        },
         [TopicName],
-        #{TopicName => #{}}
+        #{TopicName => #{}},
+        ?FETCHER_METADATA
     ),
 
     % TODO: This (and the next one) should assert parity on all partitions at some point.
@@ -99,9 +105,14 @@ emptied_topic(_Config) ->
         #{},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
+        #{
+            callback_mod => topic_consumer_parity_callback,
+            callback_arg => {topic_consumer_history_callback, History},
+            skip_empty_fetches => after_first
+        },
         [TopicName],
-        #{TopicName => #{}}
+        #{TopicName => #{}},
+        ?FETCHER_METADATA
     ),
 
     eventually:assert(
@@ -148,9 +159,14 @@ earliest_with_messages(_Config) ->
         #{},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
+        #{
+            callback_mod => topic_consumer_parity_callback,
+            callback_arg => {topic_consumer_history_callback, History},
+            skip_empty_fetches => after_first
+        },
         [TopicName],
-        #{TopicName => #{}}
+        #{TopicName => #{}},
+        ?FETCHER_METADATA
     ),
 
     eventually:assert(
@@ -224,9 +240,14 @@ latest_with_messages(_Config) ->
         #{},
         #{},
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
-        {topic_consumer_parity_callback, {topic_consumer_history_callback, History}},
+        #{
+            callback_mod => topic_consumer_parity_callback,
+            callback_arg => {topic_consumer_history_callback, History},
+            skip_empty_fetches => after_first
+        },
         [TopicName],
-        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}}
+        #{TopicName => #{initial_offset => latest, offset_reset_policy => latest}},
+        ?FETCHER_METADATA
     ),
 
     % We should NOT see the message before we see parity.

@@ -28,6 +28,7 @@ parse_broker(Broker) when is_list(Broker) ->
     )
 ).
 -define(CONSUMER_REF, ?FUNCTION_NAME).
+-define(FETCHER_METADATA, #{}).
 
 resume_offset(_Config) ->
     TelemetryRef = telemetry_test:attach_event_handlers(self(), [
@@ -53,17 +54,16 @@ resume_offset(_Config) ->
     GroupId = ?make_group_name(),
     CommittedOffset = 10,
     MembershipRef = setup_committed_offsets,
-    {ok, M} = kafine_eager_rebalance:start_link(
-        MembershipRef,
-        Bootstrap,
-        _ConnectionOptions = #{},
-        GroupId,
-        #{
-            subscription_callback => {do_nothing_subscription_callback, []},
-            assignment_callback => {do_nothing_assignment_callback, []}
-        },
-        [TopicName]
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        subscription_callback => {do_nothing_subscription_callback, []},
+        assignment_callback => {do_nothing_assignment_callback, []}
+    }),
+    {ok, B} = kafine_bootstrap:start_link(MembershipRef, Bootstrap, #{}),
+    {ok, M} = kafine_metadata_cache:start_link(MembershipRef),
+    {ok, C} = kafine_coordinator:start_link(
+        MembershipRef, GroupId, [TopicName], #{}, MembershipOptions
     ),
+    {ok, R} = kafine_eager_rebalance:start_link(MembershipRef, [TopicName], GroupId, MembershipOptions),
 
     % Wait for leader assignment so that we know we found the coordinator
     receive
@@ -72,16 +72,20 @@ resume_offset(_Config) ->
 
     % Commit offset
     Offsets = #{TopicName => #{PartitionIndex => CommittedOffset}},
-    #{
-        topics := [
-            #{
-                name := TopicName,
-                partitions := [#{partition_index := PartitionIndex, error_code := ?NONE}]
+    {
+        ok,
+        #{
+            TopicName := #{
+                PartitionIndex := ok
             }
-        ]
+        },
+        0
     } = kafine_eager_rebalance:offset_commit(MembershipRef, Offsets),
 
-    kafine_eager_rebalance:stop(M),
+    kafine_eager_rebalance:stop(R),
+    kafine_coordinator:stop(C),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
 
     % TODO? Assert the consumer lag while we've got some?
     ConsumerRef = ?CONSUMER_REF,
@@ -93,9 +97,13 @@ resume_offset(_Config) ->
         GroupId,
         #{assignment_callback => {do_nothing_assignment_callback, undefined}},
         #{},
-        {topic_consumer_callback, self()},
+        #{
+            callback_mod => topic_consumer_callback,
+            callback_arg => self()
+        },
         [TopicName],
-        #{}
+        #{},
+        ?FETCHER_METADATA
     ),
     % Wait for rebalance
     receive

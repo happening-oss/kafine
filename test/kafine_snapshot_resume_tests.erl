@@ -1,11 +1,13 @@
 -module(kafine_snapshot_resume_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("assert_meck.hrl").
 
 -define(CLUSTER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
+-define(FETCHER_METADATA, #{}).
 -define(CALLBACK_ARGS, undefined).
--define(CALLBACK_STATE, undefined).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -87,7 +89,11 @@ snapshot_parity_resumes_state() ->
     GroupId = ?GROUP_ID,
     MembershipOptions = #{},
     ConsumerOptions = #{},
-    ConsumerCallback = {test_consumer_callback, ?CALLBACK_ARGS},
+    ParallelHandlerOptions = #{
+        callback_mod => test_consumer_callback,
+        callback_arg => ?CALLBACK_ARGS,
+        skip_empty_fetches => false
+    },
     Topics = [<<"snapshot">>, <<"state">>],
     TopicOptions = #{
         <<"snapshot">> => #{offset_reset_policy => latest, initial_offset => -1},
@@ -100,12 +106,13 @@ snapshot_parity_resumes_state() ->
         GroupId,
         MembershipOptions,
         ConsumerOptions,
-        ConsumerCallback,
+        ParallelHandlerOptions,
         Topics,
-        TopicOptions
+        TopicOptions,
+        ?FETCHER_METADATA
     ),
 
-    meck:wait(
+    ?assertWait(
         PartitionCount,
         test_consumer_callback,
         end_record_batch,
@@ -113,7 +120,7 @@ snapshot_parity_resumes_state() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    meck:wait(
+    ?assertWait(
         PartitionCount,
         test_consumer_callback,
         end_record_batch,

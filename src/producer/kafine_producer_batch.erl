@@ -4,17 +4,17 @@
     produce_batch/4
 ]).
 
-produce_batch(Pid, ProduceOptions, Batch, BatchAttributes) ->
+produce_batch(RefOrPid, ProduceOptions, Batch, BatchAttributes) ->
     ReqIds = kafine_producer:reqids_new(),
-    Fun = send_topic_requests(Pid, ProduceOptions, BatchAttributes),
+    Fun = send_topic_requests(RefOrPid, ProduceOptions, BatchAttributes),
     ReqIds1 = maps:fold(Fun, ReqIds, Batch),
     merge_responses(ReqIds1).
 
-send_topic_requests(Pid, ProduceOptions, BatchAttributes) ->
+send_topic_requests(RefOrPid, ProduceOptions, BatchAttributes) ->
     fun(Topic, PartitionMsgs, ReqIdCollection) ->
         Fun = fun(PartitionIndex, Messages, ReqIdCollection1) ->
             kafine_producer:produce_async(
-                Pid,
+                RefOrPid,
                 Topic,
                 PartitionIndex,
                 ProduceOptions,

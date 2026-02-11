@@ -15,10 +15,12 @@ all_test_() ->
     ]}.
 
 setup() ->
+    kafine_producer_sup_sup:start_link(),
     meck:new(kamock_partition_produce_response, [passthrough]),
     ok.
 
 cleanup(_) ->
+    kafine_producer_sup_sup:stop(),
     meck:unload(),
     ok.
 
@@ -33,11 +35,11 @@ compression(Compression) ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, Pid} = kafine_producer:start_link(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
 
     BatchAttributes = #{compression => Compression},
     {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        Pid, ?TOPIC_NAME, ?PARTITION_1, #{}, BatchAttributes, [
+        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, #{}, BatchAttributes, [
             #{
                 key => <<"key">>,
                 value => <<"value">>,
@@ -68,7 +70,7 @@ compression(Compression) ->
     #{index := ?PARTITION_1, records := [RecordBatch]} = PartitionProduceData,
     ?assertMatch(#{attributes := #{compression := Compression}}, RecordBatch),
 
-    kafine_producer:stop(Pid),
+    kafine:stop_producer(?PRODUCER_REF),
     kamock_broker:stop(Broker),
     telemetry:detach(TelemetryRef),
     ok.

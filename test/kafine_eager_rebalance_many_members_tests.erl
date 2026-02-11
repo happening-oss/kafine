@@ -8,7 +8,7 @@
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
--define(CALLBACK_STATE, undefined).
+-define(CALLBACK_STATE, {state, ?MODULE}).
 -define(LEADER_ID, <<"member-1">>).
 -define(GROUP_GENERATION_1, 1).
 
@@ -21,10 +21,10 @@ all_test_() ->
     ]}.
 
 setup() ->
-    meck:new(test_membership_callback, [non_strict]),
-    meck:expect(test_membership_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_membership_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
-    meck:expect(test_membership_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
+    meck:new(test_subscription_callback, [non_strict]),
+    meck:expect(test_subscription_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
+    meck:expect(test_subscription_callback, subscribe_partitions, fun(_, _, St) -> {ok, St} end),
+    meck:expect(test_subscription_callback, unsubscribe_partitions, fun(St) -> {ok, St} end),
 
     meck:new(test_assignment_callback, [non_strict]),
     meck:expect(test_assignment_callback, init, fun(_) -> {ok, ?CALLBACK_STATE} end),
@@ -133,48 +133,40 @@ join_new_group_many_members() ->
         }
     ]),
 
+    MembershipOptions = kafine_membership_options:validate_options(#{
+        heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
+        subscription_callback => {test_subscription_callback, undefined},
+        assignment_callback => {test_assignment_callback, undefined},
+        assignors => [test_assignor]
+    }),
+
     % We're gonna need a leader and two followers.
-    {ok, R1} = kafine_eager_rebalance:start_link(
-        make_ref(),
-        Broker,
-        #{client_id => <<"member-1">>},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined},
-            assignors => [test_assignor]
-        },
-        Topics
+    Ref1 = make_ref(),
+    ConnectionOptions1 = #{client_id => <<"member-1">>},
+    {ok, B1} = kafine_bootstrap:start_link(Ref1, Broker, ConnectionOptions1),
+    {ok, M1} = kafine_metadata_cache:start_link(Ref1),
+    {ok, C1} = kafine_coordinator:start_link(
+        Ref1, GroupId, Topics, ConnectionOptions1, MembershipOptions
     ),
+    {ok, R1} = kafine_eager_rebalance:start_link(Ref1, Topics, GroupId, MembershipOptions),
 
-    {ok, R2} = kafine_eager_rebalance:start_link(
-        make_ref(),
-        Broker,
-        #{client_id => <<"member-2">>},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined},
-            assignors => [test_assignor]
-        },
-        Topics
+    Ref2 = make_ref(),
+    ConnectionOptions2 = #{client_id => <<"member-2">>},
+    {ok, B2} = kafine_bootstrap:start_link(Ref2, Broker, ConnectionOptions2),
+    {ok, M2} = kafine_metadata_cache:start_link(Ref2),
+    {ok, C2} = kafine_coordinator:start_link(
+        Ref2, GroupId, Topics, ConnectionOptions2, MembershipOptions
     ),
+    {ok, R2} = kafine_eager_rebalance:start_link(Ref2, Topics, GroupId, MembershipOptions),
 
-    {ok, R3} = kafine_eager_rebalance:start_link(
-        make_ref(),
-        Broker,
-        #{client_id => <<"member-3">>},
-        GroupId,
-        #{
-            heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
-            subscription_callback => {test_membership_callback, undefined},
-            assignment_callback => {test_assignment_callback, undefined},
-            assignors => [test_assignor]
-        },
-        Topics
+    Ref3 = make_ref(),
+    ConnectionOptions3 = #{client_id => <<"member-3">>},
+    {ok, B3} = kafine_bootstrap:start_link(Ref3, Broker, ConnectionOptions3),
+    {ok, M3} = kafine_metadata_cache:start_link(Ref3),
+    {ok, C3} = kafine_coordinator:start_link(
+        Ref3, GroupId, Topics, ConnectionOptions3, MembershipOptions
     ),
+    {ok, R3} = kafine_eager_rebalance:start_link(Ref3, Topics, GroupId, MembershipOptions),
 
     % Wait until they've all joined. We can tell them apart in telemetry.
     ?assertReceived(
@@ -198,5 +190,14 @@ join_new_group_many_members() ->
     kafine_eager_rebalance:stop(R1),
     kafine_eager_rebalance:stop(R2),
     kafine_eager_rebalance:stop(R3),
+    kafine_metadata_cache:stop(M1),
+    kafine_metadata_cache:stop(M2),
+    kafine_metadata_cache:stop(M3),
+    kafine_coordinator:stop(C1),
+    kafine_coordinator:stop(C2),
+    kafine_coordinator:stop(C3),
+    kafine_bootstrap:stop(B1),
+    kafine_bootstrap:stop(B2),
+    kafine_bootstrap:stop(B3),
     kamock_broker:stop(Broker),
     ok.
