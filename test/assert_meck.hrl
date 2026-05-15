@@ -58,20 +58,21 @@ end).
     end)())
 end).
 
--define(assertWait(Mod, OptFun, OptArgsSpec, Timeout), ?assertWait(1, Mod, OptFun, OptArgsSpec, Timeout)).
+-define(assertWait(Mod, OptFun, OptArgsSpec, Timeout),
+    ?assertWait(1, Mod, OptFun, OptArgsSpec, Timeout)
+).
 
 -define(assertWait(Count, Mod, OptFun, OptArgsSpec, Timeout), begin
     ((fun() ->
-        X__X = (catch meck:wait(Count, Mod, OptFun, OptArgsSpec, Timeout)),
-        case (X__X) of
-            ok ->
-                ok;
-            {'EXIT', {timeout, _}} ->
+        try (meck:wait(Count, Mod, OptFun, OptArgsSpec, Timeout)) of
+            _X__V -> ok
+        catch
+            error:timeout:_X__S ->
                 erlang:error(
                     {assertWait, [
                         {module, ?MODULE},
                         {line, ?LINE},
-                        {expected, {Mod, OptFun, ??OptArgsSpec}},
+                        {expected, {Count, Mod, OptFun, ??OptArgsSpec}},
                         {value,
                             lists:filtermap(
                                 fun

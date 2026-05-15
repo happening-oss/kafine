@@ -20,11 +20,9 @@
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_fetch, [passthrough]),
@@ -73,7 +71,8 @@ start_paused_resume_later() ->
                 callback_mod => test_consumer_callback,
                 callback_arg => ?CALLBACK_ARGS
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
 
     {ok, S1} = kafine_parallel_subscription_callback:init(?CONSUMER_REF),
@@ -83,7 +82,9 @@ start_paused_resume_later() ->
         S1
     ),
 
-    ?assertReceived({[kafine, parallel_handler, pause], _, _, #{topic := Topic, partition := ?PARTITION_1}}),
+    ?assertReceived(
+        {[kafine, parallel_handler, pause], _, _, #{topic := Topic, partition := ?PARTITION_1}}
+    ),
     #{children := Children} = kafine_parallel_subscription_impl:info(CB),
     ?assertMatch(2, maps:size(Children)),
     maps:foreach(
@@ -96,8 +97,10 @@ start_paused_resume_later() ->
     % Resume.
     ok = kafine_consumer:resume(?CONSUMER_REF, Topic, ?PARTITION_1),
 
-    ?assertReceived({[kafine, parallel_handler, resume], _, _, #{topic := Topic, partition := ?PARTITION_1}}),
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
+    ?assertReceived(
+        {[kafine, parallel_handler, resume], _, _, #{topic := Topic, partition := ?PARTITION_1}}
+    ),
+    meck:wait(2, test_consumer_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS),
 
     #{children := Children2} = kafine_parallel_subscription_impl:info(CB),
     ?assertMatch(2, maps:size(Children2)),
@@ -113,12 +116,8 @@ start_paused_resume_later() ->
         [
             ?init_callback(TopicName, ?PARTITION_1, ?CALLBACK_ARGS),
             ?init_callback(TopicName, ?PARTITION_2, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION_1, 0, 0, 4, 4),
-            ?handle_record(TopicName, ?PARTITION_1, 0, _, _),
-            ?end_record_batch(TopicName, ?PARTITION_1, 1, 0, 4, 4),
-            ?begin_record_batch(TopicName, ?PARTITION_1, 1, 0, 4, 4),
-            ?handle_record(TopicName, ?PARTITION_1, 1, _, _),
-            ?end_record_batch(TopicName, ?PARTITION_1, 2, 0, 4, 4)
+            ?handle_partition_data(TopicName, ?PARTITION_1, _, ?CALLBACK_STATE),
+            ?handle_partition_data(TopicName, ?PARTITION_1, _, ?CALLBACK_STATE)
         ],
         meck:history(test_consumer_callback)
     ),
@@ -150,9 +149,14 @@ resume_after_move() ->
     kafine_kamock:produce(0, 10),
 
     % Pause at some point.
-    meck:expect(test_consumer_callback, handle_record, fun
-        (_T, _P = ?PARTITION_1, _M = #{offset := 2}, St) -> {pause, St};
-        (_T, _P, _M, St) -> {ok, St}
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P = ?PARTITION_1, PD, St) ->
+        {Records, _} = kafine_partition_data:flatten(PD),
+        case lists:search(fun(#{offset := O}) -> O =:= 2 end, Records) of
+            {value, _} ->
+                {pause, 3, St};
+            false ->
+                {ok, St}
+        end
     end),
 
     {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Bootstrap, ?CONNECTION_OPTIONS),
@@ -172,7 +176,8 @@ resume_after_move() ->
                 callback_mod => test_consumer_callback,
                 callback_arg => ?CALLBACK_ARGS
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
 
     Topic = ?TOPIC_NAME,
@@ -186,7 +191,10 @@ resume_after_move() ->
     ),
 
     meck:wait(
-        test_consumer_callback, end_record_batch, ['_', ?PARTITION_1, 3, '_', '_'], ?WAIT_TIMEOUT_MS
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', ?PARTITION_1, meck:is(has_next_offset(3)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     % We're paused, right?
@@ -218,8 +226,8 @@ resume_after_move() ->
     % We should follow the move.
     meck:wait(
         test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_1, 10, '_', '_'],
+        handle_partition_data,
+        ['_', ?PARTITION_1, meck:is(has_next_offset(10)), '_'],
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -261,7 +269,8 @@ resume_from_offset() ->
                 callback_mod => test_consumer_callback,
                 callback_arg => ?CALLBACK_ARGS
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
 
     {ok, S1} = kafine_parallel_subscription_callback:init(?CONSUMER_REF),
@@ -271,24 +280,24 @@ resume_from_offset() ->
         S1
     ),
 
-    ?assertReceived({[kafine, parallel_handler, pause], _, _, #{topic := Topic, partition := ?PARTITION_1}}),
+    ?assertReceived(
+        {[kafine, parallel_handler, pause], _, _, #{topic := Topic, partition := ?PARTITION_1}}
+    ),
 
     ok = kafine_consumer:resume(?CONSUMER_REF, Topic, ?PARTITION_1, 2),
 
     % We should start seeing messages from partition 1 starting with offset 2
-    ?assertReceived({[kafine, parallel_handler, resume], _, _, #{topic := Topic, partition := ?PARTITION_1}}),
+    ?assertReceived(
+        {[kafine, parallel_handler, resume], _, _, #{topic := Topic, partition := ?PARTITION_1}}
+    ),
 
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
+    meck:wait(2, test_consumer_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS),
 
     ?assertMatch(
         [
             ?init_callback(TopicName, ?PARTITION_1, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION_1, 2, 0, 4, 4),
-            ?handle_record(TopicName, ?PARTITION_1, 2, _, _),
-            ?end_record_batch(TopicName, ?PARTITION_1, 3, 0, 4, 4),
-            ?begin_record_batch(TopicName, ?PARTITION_1, 3, 0, 4, 4),
-            ?handle_record(TopicName, ?PARTITION_1, 3, _, _),
-            ?end_record_batch(TopicName, ?PARTITION_1, 4, 0, 4, 4)
+            ?handle_partition_data(TopicName, ?PARTITION_1, _, _),
+            ?handle_partition_data(TopicName, ?PARTITION_1, _, _)
         ],
         meck:history(test_consumer_callback)
     ),
@@ -299,3 +308,8 @@ resume_from_offset() ->
     kafine_bootstrap:stop(B),
     kamock_broker:stop(Broker),
     ok.
+
+has_next_offset(ExpectedNextOffset) ->
+    fun(PartitionData) ->
+        kafine_partition_data:next_offset(PartitionData) =:= ExpectedNextOffset
+    end.

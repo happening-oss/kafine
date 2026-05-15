@@ -2,7 +2,11 @@
 -moduledoc false.
 -export([
     build_request/2,
-    handle_response/5
+    handle_response/2
+]).
+
+-export_type([
+    partition_result/0
 ]).
 
 -include_lib("kafcod/include/timestamp.hrl").
@@ -50,16 +54,15 @@ convert_timestamp(Offset) when Offset < 0 ->
     % It's a negative offset; we want to count backwards from the end.
     ?LATEST_TIMESTAMP.
 
+-type partition_result() :: {update_offset, kafine:offset()}.
+
 -spec handle_response(
     ListOffsetsResponse :: list_offsets_response:list_offsets_response_5(),
-    RequestedOffsets :: kafine_topic_partition_data:t(kafine:offset_timestamp()),
-    JobId :: kafine_fetcher:job_id(),
-    NodeId :: kafine:node_id(),
-    Owner :: pid()
-) -> ok.
+    RequestedOffsets :: kafine_topic_partition_data:t(kafine:offset_timestamp())
+) -> {ok, kafine_topic_partition_data:t(partition_result())}.
 
 %% Handle a ListOffsets response
-handle_response(#{topics := TopicPartitionOffsetsList}, RequestedOffsets, JobId, NodeId, Owner) ->
+handle_response(#{topics := TopicPartitionOffsetsList}, RequestedOffsets) ->
     Result =
         kafine_topic_partition_lists:to_topic_partition_data(
             fun(Topic, #{partition_index := Partition, offset := Offset, error_code := ?NONE}) ->
@@ -78,5 +81,4 @@ handle_response(#{topics := TopicPartitionOffsetsList}, RequestedOffsets, JobId,
             end,
             TopicPartitionOffsetsList
         ),
-
-    kafine_fetcher:complete_job(Owner, JobId, NodeId, Result).
+    {ok, Result}.

@@ -1,9 +1,7 @@
 -module(produce_and_consume_SUITE).
-
--compile([export_all, nowarn_export_all]).
-
+-export([all/0, suite/0, single_messages/1, batches/1]).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("kernel/include/logger.hrl").
+-export([init/3, handle_partition_data/4]).
 
 -define(CONSUMER_REF, {?FUNCTION_NAME, consumer}).
 -define(PRODUCER_REF, {?FUNCTION_NAME, producer}).
@@ -40,6 +38,7 @@ single_messages(_Config) ->
     Topics = [TopicName1, TopicName2],
 
     ConnectionOptions = #{client_id => ?CLIENT_ID},
+    ProducerOptions = #{linger_ms => 0},
 
     % Start a topic consumer
     {ok, _} = kafine:start_topic_consumer(
@@ -47,7 +46,7 @@ single_messages(_Config) ->
         Bootstrap,
         ConnectionOptions,
         #{},
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{
             callback_mod => produce_and_consume_SUITE,
             callback_arg => {NumMessages, self()}
@@ -58,7 +57,7 @@ single_messages(_Config) ->
     ),
 
     % And a producer
-    {ok, _} = kafine:start_producer(?PRODUCER_REF, Bootstrap, ConnectionOptions),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Bootstrap, ConnectionOptions, ProducerOptions),
 
     % Send NumMessages messages to each partition of each topic
     lists:foreach(
@@ -68,7 +67,7 @@ single_messages(_Config) ->
                     lists:foreach(
                         fun(Partition) ->
                             Msg = make_message(Topic, Partition, N),
-                            kafine_producer:produce(?PRODUCER_REF, Topic, Partition, #{}, #{}, [Msg])
+                            kafine_producer:produce_sync(?PRODUCER_REF, Topic, Partition, Msg)
                         end,
                         lists:seq(0, NumPartitions - 1)
                     )
@@ -105,9 +104,9 @@ batches(_Config) ->
     BootstrapServer = ct:get_config(bootstrap_server),
     Bootstrap = parse_broker(BootstrapServer),
 
-    NumPartitions = 3,
-    MessagesPerBatch = 3,
-    NumBatches = 5,
+    NumPartitions = 8,
+    MessagesPerBatch = 10,
+    NumBatches = 20,
 
     TopicName1 = ?make_topic_name(1),
     ok = kafka_fixtures:create_topic(Bootstrap, TopicName1, NumPartitions, 1),
@@ -116,6 +115,7 @@ batches(_Config) ->
     Topics = [TopicName1, TopicName2],
 
     ConnectionOptions = #{client_id => ?CLIENT_ID},
+    ProducerOptions = #{linger_ms => 10},
 
     % Start a topic consumer
     {ok, _} = kafine:start_topic_consumer(
@@ -123,7 +123,7 @@ batches(_Config) ->
         Bootstrap,
         ConnectionOptions,
         #{},
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{
             callback_mod => produce_and_consume_SUITE,
             callback_arg => {NumBatches * MessagesPerBatch, self()}
@@ -134,28 +134,59 @@ batches(_Config) ->
     ),
 
     % And a producer
-    {ok, _} = kafine:start_producer(?PRODUCER_REF, Bootstrap, ConnectionOptions),
+    {ok, _} = kafine:start_producer(?PRODUCER_REF, Bootstrap, ConnectionOptions, ProducerOptions),
 
-    % Send batches
+    % Send messages. linger_ms = 10 so these should be grouped into batches
     lists:foreach(
         fun(Batch) ->
-            Messages = #{
-                Topic =>
-                    #{
-                        Partition => [
-                            make_message(Topic, Partition, Batch * MessagesPerBatch + N)
-                         || N <- lists:seq(0, MessagesPerBatch - 1)
-                        ]
-                     || Partition <- lists:seq(0, NumPartitions - 1)
-                    }
-             || Topic <- Topics
-            },
-            kafine_producer:produce_batch(?PRODUCER_REF, #{}, Messages, #{})
+            ReqIds =
+                lists:foldl(
+                    fun(Topic, ReqIdsAcc1) ->
+                        lists:foldl(
+                            fun(Partition, ReqIdsAcc2) ->
+                                lists:foldl(
+                                    fun(N, ReqIdsAcc3) ->
+                                        Msg = make_message(
+                                            Topic, Partition, Batch * MessagesPerBatch + N
+                                        ),
+                                        Label = {Batch, Topic, Partition, N},
+                                        kafine_producer:produce(
+                                            ?PRODUCER_REF, Topic, Partition, Msg, Label, ReqIdsAcc3
+                                        )
+                                    end,
+                                    ReqIdsAcc2,
+                                    lists:seq(0, MessagesPerBatch - 1)
+                                )
+                            end,
+                            ReqIdsAcc1,
+                            lists:seq(0, NumPartitions - 1)
+                        )
+                    end,
+                    kafine_producer:reqids_new(),
+                    Topics
+                ),
+
+            % wait for the entire batch to be sent and responses to be received
+            WaitMs = 2_000,
+            Result = kafine_producer:wait_all_responses(ReqIds, WaitMs),
+            ExpectedResult =
+                #{
+                    Topic =>
+                        #{
+                            Partition => [
+                                {{Batch, Topic, Partition, N}, ok}
+                             || N <- lists:seq(0, MessagesPerBatch - 1)
+                            ]
+                         || Partition <- lists:seq(0, NumPartitions - 1)
+                        }
+                 || Topic <- Topics
+                },
+            ?assertEqual({ok, ExpectedResult, kafine_producer:reqids_new()}, Result)
         end,
         lists:seq(0, NumBatches - 1)
     ),
 
-    % wait for each topic partition to receive all messages
+    % ensure all topics receive all messages
     lists:foreach(
         fun(Topic) ->
             lists:foreach(
@@ -187,54 +218,31 @@ init(Topic, Partition, {NumMessages, TestPid}) ->
         next_message => 0
     }}.
 
-begin_record_batch(
+handle_partition_data(
     Topic,
     Partition,
-    FetchOffset,
-    _,
-    State = #{topic := Topic, partition := Partition, next_message := FetchOffset}
-) ->
-    {ok, State}.
-
-handle_record(
-    Topic,
-    Partition,
-    Message = #{offset := Offset},
+    PartitionData,
     State = #{
-        topic := Topic, partition := Partition, num_messages := NumMessages, next_message := Offset
-    }
-) when Offset < NumMessages ->
-    ?assertEqual(make_message(Topic, Partition, Offset), maps:with([key, value, headers], Message)),
-    {ok, State#{next_message => Offset + 1}}.
-
-end_record_batch(
-    Topic,
-    Partition,
-    NextOffset,
-    _,
-    State = #{
-        topic := Topic,
-        partition := Partition,
-        num_messages := NextOffset,
-        test_pid := TestPid,
-        next_message := NextOffset
+        topic := Topic, partition := Partition, test_pid := TestPid
     }
 ) ->
-    TestPid ! {done, Topic, Partition},
-    {ok, State};
-end_record_batch(
-    Topic,
-    Partition,
-    NextOffset,
-    _,
-    State = #{
-        topic := Topic,
-        partition := Partition,
-        num_messages := NumRecords,
-        next_message := NextOffset
-    }
-) when NextOffset < NumRecords ->
-    {ok, State}.
+    {NextState, _} = kafine_partition_data:reduce_while(
+        fun(Record = #{offset := Offset}, Acc) ->
+            ?assertEqual(
+                make_message(Topic, Partition, Offset), maps:with([key, value, headers], Record)
+            ),
+            {cont, Acc#{next_message => Offset + 1}}
+        end,
+        State,
+        PartitionData
+    ),
+    case kafine_partition_data:at_parity(PartitionData) of
+        true ->
+            TestPid ! {done, Topic, Partition};
+        _ ->
+            ok
+    end,
+    {ok, NextState}.
 %%% end consumer callback
 
 parse_broker(Broker) when is_list(Broker) ->

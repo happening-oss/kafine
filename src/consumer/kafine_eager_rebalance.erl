@@ -155,9 +155,12 @@ handle_event(
     enter,
     _,
     get_member_id,
-    StateData = #state{ref = Ref}
+    StateData = #state{
+        ref = Ref,
+        assignment = #{assigned_partitions := OwnedPartitions}
+    }
 ) ->
-    ReqId = kafine_coordinator:join_group(Ref, <<>>),
+    ReqId = kafine_coordinator:join_group(Ref, <<>>, OwnedPartitions),
     {keep_state, StateData#state{rebalance_req_id = ReqId}};
 handle_event(
     internal,
@@ -199,7 +202,7 @@ handle_event(
 
     % Second join request now that member id is set
     % This is expected; see KIP-394.
-    ReqId = kafine_coordinator:join_group(Ref, MemberId),
+    ReqId = kafine_coordinator:join_group(Ref, MemberId, TopicPartitions),
     StateData2 = StateData#state{
         subscription_callback = {SubscriptionCallback, SubscriptionState},
         assignment_callback = {AssignmentCallback, AssignmentState},
@@ -220,7 +223,6 @@ handle_event(
     join_group,
     StateData = #state{
         ref = Ref,
-        topics = Topics,
         group_id = GroupId,
         member_id = MemberId,
         membership_options = #{
@@ -247,13 +249,9 @@ handle_event(
                 Assignors
             ),
 
-            TopicPartitionInfo = kafine_metadata_cache:partitions(Ref, Topics),
-            TopicPartitions = maps:map(
-                fun(_Topic, Partitions) -> maps:keys(Partitions) end, TopicPartitionInfo
+            Assignments = Assignor:assign(
+                Members, kafine_cluster_metadata:from(Ref), ExistingAssignmentUserData
             ),
-            ?LOG_DEBUG("TopicPartitions = ~p", [TopicPartitions]),
-
-            Assignments = Assignor:assign(Members, TopicPartitions, ExistingAssignmentUserData),
             ?LOG_DEBUG("Assignments = ~p", [Assignments]),
 
             {next_state, {sync_group, ProtocolName, Assignments}, StateData2#state{role = leader}};
@@ -281,16 +279,19 @@ handle_event(
     StateData = #state{
         ref = Ref,
         group_id = GroupId,
+        generation_id = GenerationId,
         member_id = MemberId,
         role = Role,
         subscription_callback = {SubscriptionCallback, SubscriptionState0},
         assignment_callback = {AssignmentCallback, AssignmentState0},
-        assignment = #{assigned_partitions := PreviousTopicPartitionAssignments},
+        assignment = PreviousAssignment,
         rebalance_span = Span
     }
 ) ->
-    #{assigned_partitions := TopicPartitionAssignments} = Assignment,
     ?LOG_INFO("Assignment = ~p", [Assignment]),
+
+    #{assigned_partitions := PreviousTopicPartitionAssignments} = PreviousAssignment,
+    #{assigned_partitions := TopicPartitionAssignments, user_data := _} = Assignment,
 
     {ok, SubscriptionState, AssignmentState} = kafine_assignment:handle_assignment(
         TopicPartitionAssignments,
@@ -305,6 +306,7 @@ handle_event(
         ref => Ref,
         member_id => MemberId,
         group_id => GroupId,
+        generation_id => GenerationId,
         assignment => TopicPartitionAssignments,
         previous_assignment => PreviousTopicPartitionAssignments
     }),

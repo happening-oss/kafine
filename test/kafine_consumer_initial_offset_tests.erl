@@ -1,5 +1,6 @@
 -module(kafine_consumer_initial_offset_tests).
 -include_lib("eunit/include/eunit.hrl").
+-include("assert_meck.hrl").
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
@@ -19,11 +20,9 @@
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, dummy} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:new(kamock_list_offsets, [passthrough]),
     meck:new(kamock_fetch, [passthrough]),
@@ -81,7 +80,7 @@ earliest() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -101,11 +100,11 @@ earliest() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
+    % Wait for two calls to handle_partition_data, since we should repeat.
+    ?assertWait(
         2,
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -127,7 +126,7 @@ latest() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -147,13 +146,16 @@ latest() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
-        2,
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
+    ),
+
+    ?assertMatch(
+        {#{records := []}, 10},
+        meck:capture(last, test_consumer_callback, handle_partition_data, '_', 3)
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -180,7 +182,7 @@ resume_paused() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -210,11 +212,9 @@ resume_paused() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
-        2,
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -239,7 +239,7 @@ negative_in_range() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -260,11 +260,11 @@ negative_in_range() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
+    % Wait for two calls to handle_partition_data, since we should repeat.
+    ?assertWait(
         2,
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -288,7 +288,7 @@ negative_before_first() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -320,11 +320,9 @@ negative_before_first() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
-        2,
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -347,7 +345,7 @@ negative_before_zero() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -368,11 +366,11 @@ negative_before_zero() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
+    % Wait for two calls to handle_partition_data, since we should repeat.
+    ?assertWait(
         2,
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -395,7 +393,7 @@ negative_one() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION_1]}, ?CONSUMER_REF
@@ -416,11 +414,11 @@ negative_one() ->
         ?WAIT_TIMEOUT_MS
     ),
 
-    % Wait for two calls to end_record_batch, since we should repeat.
-    meck:wait(
+    % Wait for two calls to handle_partition_data, since we should repeat.
+    ?assertWait(
         2,
         test_consumer_callback,
-        end_record_batch,
+        handle_partition_data,
         '_',
         ?WAIT_TIMEOUT_MS
     ),
@@ -429,7 +427,7 @@ negative_one() ->
     kamock_broker:stop(Broker),
     ok.
 
-parallel_callback(Ref, TopicOptions) ->
+parallel_callback(Ref, TopicOptions, Metadata) ->
     Options = kafine_parallel_subscription_callback:validate_options(
         #{
             topic_options => TopicOptions,
@@ -441,7 +439,7 @@ parallel_callback(Ref, TopicOptions) ->
 
     #{
         id => kafine_parallel_subscription,
-        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options]},
+        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options, Metadata]},
         restart => permanent,
         shutdown => 5000,
         type => supervisor,

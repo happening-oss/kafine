@@ -1,10 +1,12 @@
 -module(kafine_node_fetcher).
 -export([
-    start_link/7,
+    start_link/6,
     stop/1,
     info/1,
 
-    job/2
+    reqids_new/0,
+    check_response/2,
+    job/4
 ]).
 -behaviour(gen_statem).
 -export([
@@ -13,25 +15,33 @@
     handle_event/4,
     terminate/3
 ]).
+-export_type([
+    request_id_collection/0
+]).
 
 -include_lib("kernel/include/logger.hrl").
 -include_lib("kafcod/include/api_key.hrl").
+-include("../kafine_eqwalizer.hrl").
+
+% How long to wait after a connection drops before reconnecting. This should be very short, we want
+% to retry pretty close to immediately. But we don't retry immediately, primarily for the sake of
+% not reconnecting before we've failed an in flight request
+-define(INITIAL_RECONNECT_DELAY_MS, 1).
 
 -spec start_link(
     Ref :: kafine:consumer_ref(),
     ConnectionOptions :: kafine:connection_options(),
     ConsumerOptions :: kafine:consumer_options(),
-    TopicOptions :: #{kafine:topic() => kafine:topic_options()},
     Owner :: pid(),
     Broker :: kafine:broker(),
     Metadata :: telemetry:event_metadata()
 ) -> gen_statem:start_ret().
 
-start_link(Ref, ConnectionOptions, ConsumerOptions, TopicOptions, Owner, Broker, Metadata) ->
+start_link(Ref, ConnectionOptions, ConsumerOptions, Owner, Broker, Metadata) ->
     ConnectionOptions1 = kafine_connection_options:validate_options(ConnectionOptions),
     gen_statem:start_link(
         ?MODULE,
-        [Ref, ConnectionOptions1, ConsumerOptions, TopicOptions, Owner, Broker, Metadata],
+        [Ref, ConnectionOptions1, ConsumerOptions, Owner, Broker, Metadata],
         start_options()
     ).
 
@@ -60,29 +70,47 @@ stop(Pid) when is_pid(Pid) ->
         broker := kafine:broker(),
         connection_options := kafine:connection_options(),
         consumer_options := kafine:consumer_options(),
-        topic_options := #{kafine:topic() => kafine:topic_options()},
         connection := pid() | undefined
     }.
 
 info(Pid) when is_pid(Pid) ->
     gen_statem:call(Pid, info).
 
+-type request_id_collection() :: gen_statem:request_id_collection().
+
+-spec reqids_new() -> request_id_collection().
+
+reqids_new() ->
+    gen_statem:reqids_new().
+
+-spec check_response(Msg :: term(), ReqIds :: request_id_collection()) -> Result when
+    Result :: {Response, Label, NewReqIds} | no_request | no_reply,
+    Response :: {reply, Reply} | {error, {Reason :: term(), gen_statem:server_ref()}},
+    Reply ::
+        {ok, kafine_topic_partition_data:t(kafine_fetch:partition_result())}
+        | {ok, kafine_topic_partition_data:t(kafine_list_offsets:partition_result())}
+        | {error, term()},
+    Label :: term(),
+    NewReqIds :: request_id_collection().
+
+check_response(Msg, ReqIds) ->
+    ?DYNAMIC_CAST(gen_statem:check_response(Msg, ReqIds, true)).
+
 -type job() ::
     {
-        kafine_fetcher:job_id(),
         list_offsets,
         kafine_topic_partition_data:t(kafine:offset_timestamp())
     }
     | {
-        kafine_fetcher:job_id(),
         fetch,
         kafine_topic_partition_data:t({kafine:offset(), module(), any()})
     }.
 
--spec job(Pid :: pid(), Job :: job()) -> ok.
+-spec job(Pid :: pid(), Job :: job(), Label :: term(), ReqIdCollection :: request_id_collection()) ->
+    request_id_collection().
 
-job(Pid, Job) ->
-    gen_statem:cast(Pid, {job, Job}).
+job(Pid, Job, Label, ReqIdCollection) ->
+    gen_statem:send_request(Pid, {job, Job}, Label, ReqIdCollection).
 
 -record(state, {
     ref :: kafine:consumer_ref(),
@@ -90,21 +118,20 @@ job(Pid, Job) ->
     broker :: kafine:broker(),
     connection_options :: kafine:connection_options(),
     consumer_options :: kafine:consumer_options(),
-    topic_options :: #{kafine:topic() => kafine:topic_options()},
     connection = undefined :: pid() | undefined,
-    backoff_state :: kafine_backoff:state(),
+    connect_backoff_state :: kafine_backoff:state(),
+    request_backoff_state = undefined :: kafine_backoff:state() | undefined,
     req_ids = kafine_connection:reqids_new() :: kafine_connection:request_id_collection(),
     request_job_span = undefined :: kafine_telemetry:span() | undefined,
     metadata :: telemetry:event_metadata()
 }).
 
-callback_mode() -> handle_event_function.
+callback_mode() -> [handle_event_function, state_enter].
 
 init([
     Ref,
     ConnectionOptions = #{backoff := BackoffConfig},
     ConsumerOptions,
-    TopicOptions,
     Owner,
     Broker = #{node_id := NodeId},
     Metadata
@@ -122,21 +149,19 @@ init([
         owner = Owner,
         broker = Broker,
         connection_options = ConnectionOptions,
-        topic_options = TopicOptions,
         consumer_options = ConsumerOptions,
-        backoff_state = kafine_backoff:init(BackoffConfig),
+        connect_backoff_state = kafine_backoff:init(BackoffConfig),
         metadata = Metadata2
     },
-    {ok, init, State, [{next_event, internal, connect}]}.
+    {ok, disconnected, State, {next_event, internal, connect}}.
 
 handle_event(
     _,
     connect,
-    _,
+    disconnected,
     StateData = #state{
         broker = Broker = #{node_id := NodeId},
-        connection_options = ConnectionOptions,
-        backoff_state = BackoffState,
+        connection_options = ConnectionOptions = #{backoff := BackoffConfig},
         metadata = Metadata
     }
 ) ->
@@ -145,25 +170,54 @@ handle_event(
             telemetry:execute([kafine, node_fetcher, connected], #{}, Metadata),
             NewState = StateData#state{
                 connection = Connection,
-                backoff_state = kafine_backoff:reset(BackoffState)
+                connect_backoff_state = kafine_backoff:init(BackoffConfig)
             },
-            {next_state, request_job, NewState, {next_event, internal, request_job}};
+            {next_state, request_job, NewState};
         {error, Reason} ->
-            % We retry indefinitely. In the event the node is permanently gone, the group
-            % coordinator will rebalance and remove this node. Note the assumption is made here
-            % that new broker instance => new node id, which is important because we rely on this
-            % process being recreated with an updated host-port. Double-check this assumption
-            % holds, especially if we're going to support static consumer group membership.
-            ?LOG_WARNING("Failed to connect to broker ~p: ~p, backing off", [NodeId, Reason]),
-            {DelayMs, NewBackoffState} = kafine_backoff:backoff(BackoffState),
+            % We retry indefinitely unless told otherwise. In the event the node is permanently
+            % gone, the group coordinator will rebalance and remove this node. Note the assumption
+            % is made here that new broker instance => new node id, which is important because we
+            % rely on this process being recreated with an updated host-port. Double-check this
+            % assumption holds, especially if we're going to support static consumer group
+            % membership.
+            ?LOG_WARNING("Failed to connect to broker ~p at ~s: ~p, backing off", [
+                NodeId, format_broker(Broker), Reason
+            ]),
+            {next_state, {connect_backoff, Reason}, StateData}
+    end;
+handle_event(
+    enter,
+    _,
+    {connect_backoff, Reason},
+    StateData = #state{
+        broker = #{node_id := NodeId},
+        connect_backoff_state = BackoffState,
+        metadata = Metadata
+    }
+) ->
+    case kafine_backoff:backoff(BackoffState) of
+        limit_exceeded ->
+            ?LOG_ERROR(
+                "Backoff limit exceeded when attempting to connect to broker ~B",
+                [NodeId]
+            ),
+            {stop, backoff_limit_exceeded, StateData};
+        {DelayMs, NewBackoffState} ->
             telemetry:execute(
-                [kafine, node_fetcher, backoff],
+                [kafine, node_fetcher, connect_backoff],
                 #{delay_ms => DelayMs},
                 Metadata#{reason => Reason}
             ),
-            NewState = StateData#state{backoff_state = NewBackoffState},
-            {next_state, backoff, NewState, {state_timeout, DelayMs, connect}}
+            NewState = StateData#state{connect_backoff_state = NewBackoffState},
+            {keep_state, NewState, {state_timeout, DelayMs, expired}}
     end;
+handle_event(
+    state_timeout,
+    expired,
+    {connect_backoff, _Reason},
+    StateData
+) ->
+    {next_state, disconnected, StateData, {next_event, internal, connect}};
 handle_event(
     info,
     {'EXIT', Connection, Reason},
@@ -174,14 +228,21 @@ handle_event(
     }
 ) ->
     ?LOG_DEBUG("Connection exited with reason ~p, reconnecting", [Reason]),
-    % TODO: backoff strategy
     telemetry:execute([kafine, node_fetcher, disconnected], #{}, Metadata),
-    {keep_state, StateData#state{connection = undefined, req_ids = kafine_connection:reqids_new()},
-        {next_event, internal, connect}};
+    {next_state, disconnected, StateData#state{connection = undefined}};
 handle_event(
-    internal,
-    request_job,
+    enter,
     _,
+    disconnected,
+    _StateData
+) ->
+    % we don't retry immediately, primarily for the sake of not reconnecting before we've failed an
+    % in flight request
+    {keep_state_and_data, {state_timeout, ?INITIAL_RECONNECT_DELAY_MS, connect}};
+handle_event(
+    enter,
+    _,
+    request_job,
     StateData = #state{
         ref = Ref,
         owner = Owner,
@@ -193,23 +254,36 @@ handle_event(
     }),
     kafine_fetcher:request_job(Owner, NodeId, self()),
     {keep_state, StateData#state{request_job_span = Span}};
-handle_event(info, {job, JobType, _Data}, request_job, #state{connection = undefined}) ->
-    ?LOG_DEBUG("Ignoring ~p job while disconnected", [JobType]),
-    keep_state_and_data;
 handle_event(
-    cast,
-    {job, Job = {_, list_offsets, TopicPartitionOffsets}},
+    {call, From},
+    {job, {JobType, _}},
+    _,
+    #state{connection = undefined}
+) ->
+    ?LOG_DEBUG("Failing ~p job while disconnected", [JobType]),
+    {keep_state_and_data, {reply, From, {error, not_connected}}};
+handle_event(
+    {call, From},
+    {job, {JobType, JobBody}},
     request_job,
+    StateData = #state{request_job_span = RequestJobSpan}
+) ->
+    kafine_telemetry:stop_span([kafine, node_fetcher, request_job], RequestJobSpan),
+    {next_state, {JobType, JobBody, From}, StateData#state{
+        request_job_span = undefined, request_backoff_state = undefined
+    }};
+handle_event(
+    enter,
+    _,
+    State = {list_offsets, TopicPartitionOffsets, _From},
     StateData = #state{
         consumer_options = #{isolation_level := IsolationLevel},
         connection = Connection,
         req_ids = ReqIds,
-        request_job_span = RequestJobSpan,
         metadata = Metadata
     }
 ) ->
     ?LOG_DEBUG("Listing offsets:~n~p", [TopicPartitionOffsets]),
-    kafine_telemetry:stop_span([kafine, node_fetcher, request_job], RequestJobSpan),
     telemetry:execute([kafine, node_fetcher, list_offsets], #{}, Metadata),
     ListOffsetsRequest = kafine_list_offsets:build_request(
         TopicPartitionOffsets, IsolationLevel
@@ -219,26 +293,24 @@ handle_event(
         fun list_offsets_request:encode_list_offsets_request_5/1,
         ListOffsetsRequest,
         fun list_offsets_response:decode_list_offsets_response_5/1,
-        Job,
+        State,
         ReqIds,
-        request_metadata(?LIST_OFFSETS, 5)
+        request_metadata(?LIST_OFFSETS, 5, Metadata)
     ),
-    {next_state, list_offsets, StateData#state{req_ids = ReqIds2, request_job_span = undefined}};
+    {keep_state, StateData#state{req_ids = ReqIds2}};
 handle_event(
-    cast,
-    {job, Job = {_, fetch, FetchInfo}},
-    request_job,
+    enter,
+    _,
+    State = {fetch, FetchInfo, _From},
     StateData = #state{
         connection = Connection,
         metadata = Metadata,
         consumer_options = ConsumerOptions,
-        req_ids = ReqIds,
-        request_job_span = RequestJobSpan
+        req_ids = ReqIds
     }
 ) ->
     % FetchInfo is #{Topic => #{Partition => {Offset, Mod, ModState}}}
     ?LOG_DEBUG("Fetching: ~p", [FetchInfo]),
-    kafine_telemetry:stop_span([kafine, node_fetcher, request_job], RequestJobSpan, #{}, Metadata),
     FetchMeasurements = #{
         fetching => kafine_topic_partition_data:topic_partitions(FetchInfo)
     },
@@ -250,18 +322,27 @@ handle_event(
         fun fetch_request:encode_fetch_request_11/1,
         FetchRequest,
         fun fetch_response:decode_fetch_response_11/1,
-        Job,
+        State,
         ReqIds,
-        request_metadata(?FETCH, 11)
+        request_metadata(?FETCH, 11, Metadata)
     ),
-    {next_state, fetch, StateData#state{req_ids = ReqIds2, request_job_span = undefined}};
+    {keep_state, StateData#state{req_ids = ReqIds2}};
+handle_event(
+    state_timeout,
+    backoff_complete,
+    {request_backoff, Job},
+    StateData
+) ->
+    % The backoff complete timeout is only set when we're backing off a request, so we know that if
+    % we get this event, we should retry the request
+    {next_state, Job, StateData};
 handle_event(
     info,
     Info,
     State,
     StateData = #state{req_ids = ReqIds}
 ) ->
-    check_response(kafine_connection:check_response(Info, ReqIds), Info, State, StateData);
+    check_broker_response(kafine_connection:check_response(Info, ReqIds), Info, State, StateData);
 handle_event(
     {call, From},
     info,
@@ -271,7 +352,6 @@ handle_event(
         broker = Broker = #{node_id := NodeId},
         connection_options = ConnectionOptions,
         consumer_options = ConsumerOptions,
-        topic_options = TopicOptions,
         connection = Connection
     }
 ) ->
@@ -282,14 +362,21 @@ handle_event(
         broker => Broker,
         connection_options => ConnectionOptions,
         consumer_options => ConsumerOptions,
-        topic_options => TopicOptions,
         connection => Connection
     },
-    {keep_state_and_data, {reply, From, Info}}.
+    {keep_state_and_data, {reply, From, Info}};
+handle_event(
+    enter,
+    _,
+    _,
+    _
+) ->
+    % Catch-all handler for states that don't need to do anything at state enter
+    keep_state_and_data.
 
-check_response(_Result = {Response, Label, ReqIds2}, _Info, State, StateData) ->
-    handle_response(Response, Label, State, StateData#state{req_ids = ReqIds2});
-check_response(_Other, Info, State, StateData) ->
+check_broker_response(_Result = {Response, Label, ReqIds2}, _Info, _State, StateData) ->
+    handle_response(Response, Label, StateData#state{req_ids = ReqIds2});
+check_broker_response(_Other, Info, State, StateData) ->
     handle_info(Info, State, StateData).
 
 handle_info(Info, _State, _StateData) ->
@@ -299,36 +386,82 @@ handle_info(Info, _State, _StateData) ->
 
 handle_response(
     {ok, ListOffsetsResponse},
-    {JobId, list_offsets, RequestedOffsets},
-    _State = list_offsets,
-    StateData = #state{
-        broker = #{node_id := NodeId},
-        owner = Owner
-    }
+    {list_offsets, RequestedOffsets, From},
+    StateData
 ) ->
     ?LOG_DEBUG("List offsets response:~n~p", [ListOffsetsResponse]),
-    kafine_list_offsets:handle_response(
-        ListOffsetsResponse, RequestedOffsets, JobId, NodeId, Owner
-    ),
-    {next_state, request_job, StateData, [{next_event, internal, request_job}]};
+    Result = kafine_list_offsets:handle_response(ListOffsetsResponse, RequestedOffsets),
+    {next_state, request_job, StateData, {reply, From, Result}};
 handle_response(
     {ok, FetchResponse},
-    {JobId, fetch, FetchInfo},
-    _State = fetch,
-    StateData = #state{
-        broker = #{node_id := NodeId},
-        owner = Owner,
-        topic_options = TopicOptions
-    }
+    Job = {fetch, FetchInfo, From},
+    StateData
 ) ->
     ?LOG_DEBUG("Fetch response: ~p", [FetchResponse]),
-    kafine_fetch:handle_response(FetchResponse, FetchInfo, JobId, NodeId, TopicOptions, Owner),
-    {next_state, request_job, StateData, [{next_event, internal, request_job}]}.
+    case kafine_fetch:handle_response(FetchResponse, FetchInfo) of
+        Result = {ok, _} ->
+            {next_state, request_job, StateData, {reply, From, Result}};
+        {error, {kafka_error, ErrorCode}} ->
+            handle_error_response(ErrorCode, Job, StateData)
+    end;
+handle_response(
+    {error, {closed, _}},
+    {JobType, _, From},
+    _StateData
+) ->
+    ?LOG_DEBUG("Connection closed during ~p", [JobType]),
+    {keep_state_and_data, {reply, From, {error, closed}}}.
+
+handle_error_response(
+    ErrorCode,
+    Job = {JobType, _, _},
+    StateData = #state{
+        consumer_options = #{retry_backoff := RetryBackoff},
+        request_backoff_state = BackoffState,
+        metadata = Metadata
+    }
+) ->
+    case kafcod_error:is_retriable(ErrorCode) of
+        true ->
+            case backoff(BackoffState, RetryBackoff) of
+                {DelayMs, NewBackoffState} ->
+                    ?LOG_DEBUG("Top-level error ~B for ~p job, retrying after ~B ms", [
+                        ErrorCode, JobType, DelayMs
+                    ]),
+                    telemetry:execute(
+                        [kafine, node_fetcher, request_backoff],
+                        #{job_type => JobType, delay_ms => DelayMs, error_code => ErrorCode},
+                        Metadata
+                    ),
+                    NewStateData = StateData#state{request_backoff_state = NewBackoffState},
+                    {next_state, {request_backoff, Job}, NewStateData,
+                        {state_timeout, DelayMs, backoff_complete}};
+                limit_exceeded ->
+                    ?LOG_ERROR("Retry limit hit with error ~B for ~p job, node fetcher exiting", [
+                        ErrorCode, JobType
+                    ]),
+                    {stop, {kafka_error, ErrorCode}, StateData}
+            end;
+        false ->
+            ?LOG_ERROR("Non retryable error ~B for ~p job, node fetcher exiting", [
+                ErrorCode, JobType
+            ]),
+            {stop, {kafka_error, ErrorCode}, StateData}
+    end.
+
+backoff(undefined, RetryBackoff) ->
+    BackoffState = kafine_backoff:init(RetryBackoff),
+    backoff(BackoffState, RetryBackoff);
+backoff(BackoffState, _RetryBackoff) ->
+    kafine_backoff:backoff(BackoffState).
 
 terminate(_Reason, _State, #state{connection = Connection}) when Connection =:= undefined ->
     ok;
 terminate(_Reason, _State, #state{connection = Connection}) ->
     kafine_connection:stop(Connection).
 
-request_metadata(ApiKey, ApiVersion) ->
-    #{api_key => ApiKey, api_version => ApiVersion}.
+request_metadata(ApiKey, ApiVersion, Metadata) ->
+    Metadata#{api_key => ApiKey, api_version => ApiVersion}.
+
+format_broker(#{host := Host, port := Port}) ->
+    iolist_to_binary(io_lib:format("~s:~B", [Host, Port])).

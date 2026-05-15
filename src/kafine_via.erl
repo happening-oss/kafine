@@ -10,6 +10,9 @@
     whereis_name/1,
     send/2
 ]).
+-export([
+    all/0
+]).
 -export_type([
     name/0,
     via/0
@@ -43,3 +46,12 @@ whereis_name(Name) ->
 -spec send(Name, Message) -> Message when Name :: name(), Message :: term().
 send(Name, Message) ->
     gproc:send(?GPROC_NAME(Name), Message).
+
+all() ->
+    % From https://erlangforums.com/t/querying-gproc-how-to-get-a-list-of-registered-names/5510/2
+    [
+        {Name, Pid}
+     || {{n, l, Name}, Pid, _} <- gproc:select({local, names}, [
+            {{{n, l, '_'}, '_', '_'}, [], ['$_']}
+        ])
+    ].

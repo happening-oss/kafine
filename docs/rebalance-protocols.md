@@ -15,4 +15,6 @@ Kafka supports different consumer group rebalancing protocols:
   - This protocol is about 5 years old at this point.
   - **This is not supported by Kafine.**
 - KIP-848 (and Kafka 4.x) introduces the "next generation of the consumer rebalance protocol".
+  - See these links for more detail:
+    - <https://www.instaclustr.com/blog/rebalance-your-apache-kafka-partitions-with-the-next-generation-consumer-rebalance-protocol/>
   - **This is not supported by Kafine.**

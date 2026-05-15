@@ -118,7 +118,10 @@ stop_span(
     StopTime = erlang:monotonic_time(),
     StopMetadata = maps:merge(Metadata0, Metadata),
     StopMeasurements = maps:merge(Measurements0, Measurements#{
-        duration => StopTime - StartTime, monotonic_time => StopTime
+        monotonic_time => StopTime,
+        % 'telemetry:span' doesn't emit 'system_time' in 'stop' events. We do; it's the same instant as 'monotonic_time'.
+        system_time => erlang:system_time(),
+        duration => StopTime - StartTime
     }),
     telemetry:execute(
         EventPrefix ++ [stop],
@@ -146,7 +149,13 @@ span_exception(
     StopMetadata = Metadata,
     telemetry:execute(
         EventPrefix ++ [exception],
-        #{duration => StopTime - StartTime, monotonic_time => StopTime},
+        #{
+            monotonic_time => StopTime,
+            % 'telemetry:span' doesn't emit 'system_time' in 'exception' events. We do; it's the same instant as
+            % 'monotonic_time'.
+            system_time => erlang:system_time(),
+            duration => StopTime - StartTime
+        },
         StopMetadata#{kind => Class, reason => Reason, stacktrace => Stacktrace}
     ).
 

@@ -77,6 +77,7 @@ direct_produce_one(_Config) ->
     % Produce a message to the leader.
     Records = kafcod_message_set:prepare_message_set(#{compression => none}, [
         #{
+            timestamp => 1_000_000_000,
             key => <<"key">>,
             value => <<"value">>,
             headers => []

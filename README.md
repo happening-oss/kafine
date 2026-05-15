@@ -33,13 +33,22 @@ Ref = cars.
 Bootstrap = #{host => "localhost", port => 9092}.
 ConnectionOptions = #{}.
 ConsumerOptions = #{}.
-SubscriptionOptions = #{}.
-Callback = {kafine_consumer_callback_logger, undefined}.
+SubscriberOptions = #{}.
+ParallelHandlerOptions = #{callback_mod => kafine_consumer_callback_logger, callback_arg => undefined}.
 Topics = [<<"cars">>].
 TopicOptions = #{<<"cars">> => #{offset_reset_policy => latest}}.
 Metadata = #{}.
 
-{ok, _} = kafine:start_topic_consumer(Ref, Bootstrap, ConnectionOptions, ConsumerOptions, SubscriptionOptions, Callback, Topics, TopicOptions, Metadata).
+{ok, _} = kafine:start_topic_consumer(
+                Ref,
+                Bootstrap,
+                ConnectionOptions,
+                ConsumerOptions,
+                SubscriberOptions,
+                ParallelHandlerOptions,
+                Topics,
+                TopicOptions,
+                Metadata).
 ```
 
 You can use (e.g.) `kcat` to produce a message:
@@ -64,9 +73,10 @@ ConnectionOptions = #{}.
 GroupId = <<"group">>.
 MembershipOptions = #{}.
 ConsumerOptions = #{}.
-ConsumerCallback = {kafine_consumer_callback_logger, undefined}.
+ParallelHandlerOptions = #{callback_mod => kafine_consumer_callback_logger, callback_arg => undefined}.
 Topics = [<<"cars">>].
 TopicOptions = #{<<"cars">> => #{}}.
+Metadata = #{}.
 
 {ok, _} = kafine:start_group_consumer(
                 Ref,
@@ -75,9 +85,10 @@ TopicOptions = #{<<"cars">> => #{}}.
                 GroupId,
                 MembershipOptions,
                 ConsumerOptions,
-                ConsumerCallback,
+                ParallelHandlerOptions,
                 Topics,
-                TopicOptions
+                TopicOptions,
+                Metadata
 ).
 ```
 
@@ -89,6 +100,16 @@ makes for a nice demo:
 ```erlang
 Ref1 = make_ref().
 Ref2 = make_ref().
+Bootstrap = #{host => "localhost", port => 9092}.
+ConnectionOptions = #{}.
+GroupId = <<"group">>.
+MembershipOptions = #{}.
+ConsumerOptions = #{}.
+ParallelHandlerOptions = #{callback_mod => kafine_consumer_callback_logger, callback_arg => undefined}.
+Topics = [<<"cars">>].
+TopicOptions = #{<<"cars">> => #{}}.
+Metadata = #{}.
+
 {ok, _} = kafine:start_group_consumer(
                 Ref1,
                 Bootstrap,
@@ -96,9 +117,10 @@ Ref2 = make_ref().
                 GroupId,
                 MembershipOptions,
                 ConsumerOptions,
-                ConsumerCallback,
+                ParallelHandlerOptions,
                 Topics,
-                TopicOptions
+                TopicOptions,
+                Metadata
 ).
 {ok, _} = kafine:start_group_consumer(
                 Ref2,
@@ -107,9 +129,10 @@ Ref2 = make_ref().
                 GroupId,
                 MembershipOptions,
                 ConsumerOptions,
-                ConsumerCallback,
+                ParallelHandlerOptions,
                 Topics,
-                TopicOptions
+                TopicOptions,
+                Metadata
 ).
 ```
 
@@ -119,10 +142,11 @@ Ref2 = make_ref().
 Ref = example.
 Bootstrap = #{host => "localhost", port => 9092}.
 ConnectionOptions = #{}.
+ProducerOptions = #{}.
 Topic = <<"cars">>.
 Partition = 0.
 
-{ok, Pid} = kafine:start_producer(Ref, Bootstrap, ConnectionOptions).
+{ok, Pid} = kafine:start_producer(Ref, Bootstrap, ConnectionOptions, ProducerOptions).
 
 Messages = [
     #{

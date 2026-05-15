@@ -20,6 +20,8 @@ endif
 
 EQWALIZER_TAR_GZ := $(EQWALIZER_TMP)/elp-$(EQWALIZER_FLAVOUR)-otp-$(EQWALIZER_OTP_VSN).tar.gz
 
+eqwalizer: eqwalize
+
 eqwalize:: $(EQWALIZER_ELP)
 	REBAR_PROFILE=eqwalizer $(EQWALIZER_ELP) eqwalize-all
 

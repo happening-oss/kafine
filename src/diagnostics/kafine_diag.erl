@@ -2,4 +2,7 @@
 -export([info/0]).
 
 info() ->
-    #{consumers => kafine_consumer:info()}.
+    #{
+        consumers => kafine_consumer:info(),
+        producers => kafine_producer:info()
+    }.

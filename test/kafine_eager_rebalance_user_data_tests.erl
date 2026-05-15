@@ -31,14 +31,7 @@ setup() ->
 
     meck:new(test_assignor, [non_strict]),
     meck:expect(test_assignor, name, fun() -> <<"test">> end),
-    meck:expect(test_assignor, metadata, fun(Topics) ->
-        #{
-            topics => Topics,
-            % Confusingly named; this user data is anything the member wants to tell the leader.
-            user_data => <<>>
-        }
-    end),
-    meck:expect(test_assignor, assign, fun(_Members, _TopicPartitions, _AssignmentUserData) ->
+    meck:expect(test_assignor, assign, fun(_Members, _ClusterMetadata, _AssignmentUserData) ->
         #{}
     end),
     ok.
@@ -49,7 +42,7 @@ cleanup(_) ->
 
 assignment_user_data_is_preserved() ->
     % If the leader gives some user data to a member, and that member is later elected leader, then that user data is
-    % passed to the assignor. This allows for stickiness to be communicated between members.
+    % passed to the assignor. This allows for (e.g.) stickiness to be communicated between members.
     GroupId = ?GROUP_ID,
     TopicName = ?TOPIC_NAME,
     Topics = [TopicName],
@@ -87,10 +80,7 @@ assignment_user_data_is_preserved() ->
     % The leader can pass user data in each assignment. It could vary by member, or the leader could pass the same thing
     % to each member.
     AssignmentUserData = <<"assignment-user-data">>,
-
-    % It gets a little bit confusing here. We tell the assignor to return some assignments and user data, and then we
-    % completely ignore it when mocking the SyncGroup response.
-    meck:expect(test_assignor, assign, fun(_Members, _TopicPartitions, _AssignmentUserData) ->
+    meck:expect(test_assignor, assign, fun(_Members, _ClusterMetadata, _AssignmentUserData) ->
         #{
             <<"member-1">> => #{
                 assigned_partitions => #{TopicName => [0, 1]}, user_data => AssignmentUserData
@@ -101,22 +91,13 @@ assignment_user_data_is_preserved() ->
         }
     end),
 
-    % Once they're both joined, assign some partitions.
-    AssignedPartitions1 = [#{topic => ?TOPIC_NAME, partitions => [0, 1]}],
-    AssignedPartitions2 = [#{topic => ?TOPIC_NAME, partitions => [2, 3]}],
-    meck:expect(kamock_sync_group, handle_sync_group_request, [
-        {
-            % Note: we don't assert that the SyncGroup request from the leader contains the userdata returned from the
-            % assignor, because that would require (1) decomposing the request; (2) copy-pasting this below, but
-            % reversed. Ain't nobody got time for that.
-            [meck:is(HasMemberId(<<"member-1">>)), '_'],
-            kamock_sync_group:assign(AssignedPartitions1, AssignmentUserData)
-        },
-        {
-            [meck:is(HasMemberId(<<"member-2">>)), '_'],
-            kamock_sync_group:assign(AssignedPartitions2, AssignmentUserData)
-        }
-    ]),
+    % Once they're both joined, assign some partitions. We use 'wait_for_members', so that the leader does this, and the
+    % assignor is used properly.
+    meck:expect(
+        kamock_sync_group,
+        handle_sync_group_request,
+        kamock_sync_group:wait_for_members(<<"member-1">>, [<<"member-2">>])
+    ),
 
     MembershipOptions = kafine_membership_options:validate_options(#{
         heartbeat_interval_ms => ?HEARTBEAT_INTERVAL_MS,
@@ -130,14 +111,18 @@ assignment_user_data_is_preserved() ->
     ConnectionOptions1 = #{client_id => <<"member-1">>},
     {ok, B1} = kafine_bootstrap:start_link(Ref1, Broker, ConnectionOptions1),
     {ok, M1} = kafine_metadata_cache:start_link(Ref1),
-    {ok, C1} = kafine_coordinator:start_link(Ref1, GroupId, Topics, ConnectionOptions1, MembershipOptions),
+    {ok, C1} = kafine_coordinator:start_link(
+        Ref1, GroupId, Topics, ConnectionOptions1, MembershipOptions
+    ),
     {ok, R1} = kafine_eager_rebalance:start_link(Ref1, Topics, GroupId, MembershipOptions),
 
     Ref2 = {?MODULE, ?FUNCTION_NAME, member_2},
     ConnectionOptions2 = #{client_id => <<"member-2">>},
     {ok, B2} = kafine_bootstrap:start_link(Ref2, Broker, ConnectionOptions2),
     {ok, M2} = kafine_metadata_cache:start_link(Ref2),
-    {ok, C2} = kafine_coordinator:start_link(Ref2, GroupId, Topics, ConnectionOptions2, MembershipOptions),
+    {ok, C2} = kafine_coordinator:start_link(
+        Ref2, GroupId, Topics, ConnectionOptions2, MembershipOptions
+    ),
     {ok, R2} = kafine_eager_rebalance:start_link(Ref2, Topics, GroupId, MembershipOptions),
 
     % Wait until they've both joined.
@@ -148,7 +133,7 @@ assignment_user_data_is_preserved() ->
         {[kafine, rebalance, follower], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
     end,
 
-    % The assignor should be called with the initial user data being empty.
+    % The assignor should have been called with the initial user data being empty.
     ?assertCalled(test_assignor, assign, ['_', '_', <<>>]),
 
     meck:reset(test_assignor),
@@ -176,7 +161,12 @@ assignment_user_data_is_preserved() ->
         }
     ]),
 
-    % There's no need to swap the assignments, so we'll leave the previous SyncGroup mock alone.
+    % The leader changed.
+    meck:expect(
+        kamock_sync_group,
+        handle_sync_group_request,
+        kamock_sync_group:wait_for_members(<<"member-2">>, [<<"member-1">>])
+    ),
 
     % Trigger the rebalance.
     meck:expect(

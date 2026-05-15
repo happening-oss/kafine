@@ -2,7 +2,7 @@
 
 -behaviour(supervisor).
 
--export([start_link/3]).
+-export([start_link/4]).
 
 -export([init/1]).
 
@@ -11,14 +11,19 @@ id(Ref) -> {?MODULE, Ref}.
 via(Ref) ->
     kafine_via:via(id(Ref)).
 
-start_link(Ref, Bootstrap, ConnectionOptions) ->
+start_link(Ref, Bootstrap, ConnectionOptions, ProducerOptions) ->
     supervisor:start_link(
         via(Ref),
         ?MODULE,
-        [Ref, Bootstrap, kafine_connection_options:validate_options(ConnectionOptions)]
+        [
+            Ref,
+            Bootstrap,
+            kafine_connection_options:validate_options(ConnectionOptions),
+            ProducerOptions
+        ]
     ).
 
-init([Ref, Bootstrap, ConnectionOptions]) ->
+init([Ref, Bootstrap, ConnectionOptions, ProducerOptions]) ->
     kafine_proc_lib:set_label({?MODULE, Ref}),
     Children = [
         #{
@@ -39,7 +44,8 @@ init([Ref, Bootstrap, ConnectionOptions]) ->
         },
         #{
             id => node_producer_sup,
-            start => {kafine_node_producer_sup, start_link, [Ref, ConnectionOptions]},
+            start =>
+                {kafine_node_producer_sup, start_link, [Ref, ConnectionOptions, ProducerOptions]},
             restart => permanent,
             shutdown => infinity,
             type => supervisor,
@@ -47,7 +53,7 @@ init([Ref, Bootstrap, ConnectionOptions]) ->
         },
         #{
             id => producer,
-            start => {kafine_producer, start_link, [Ref]},
+            start => {kafine_producer, start_link, [Ref, ProducerOptions]},
             restart => permanent,
             shutdown => 5_000,
             type => worker,

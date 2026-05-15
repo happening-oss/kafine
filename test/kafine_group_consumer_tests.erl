@@ -11,7 +11,6 @@
 -define(GROUP_ID, iolist_to_binary(io_lib:format("~s___~s_g", [?MODULE, ?FUNCTION_NAME]))).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(FETCHER_METADATA, #{}).
--define(MEMBERSHIP_CALLBACK, kafine_parallel_subscription_callback).
 -define(HEARTBEAT_INTERVAL_MS, 30).
 -define(PROTOCOL_NAME, <<"kafine">>).
 -define(PROTOCOL_TYPE, <<"kafine">>).
@@ -38,11 +37,9 @@ setup() ->
 
     meck:new(test_consumer_callback, [non_strict, stub_all]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, undefined} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:new(kamock_fetch, [passthrough]),
     meck:new(kamock_join_group, [passthrough]),
@@ -148,28 +145,13 @@ leader_revoke_and_reassign() ->
     % Assign [0,1] and [2,3]
     Partitions01 = [0, 1],
     Partitions23 = [2, 3],
-    Assignment01 = kafcod_consumer_protocol:encode_assignment(
-        [#{topic => ?TOPIC_NAME, partitions => Partitions01}], <<>>
-    ),
-    Assignment23 = kafcod_consumer_protocol:encode_assignment(
-        [#{topic => ?TOPIC_NAME, partitions => Partitions23}], <<>>
-    ),
+    Assignment01 = [#{topic => ?TOPIC_NAME, partitions => Partitions01}],
+    Assignment23 = [#{topic => ?TOPIC_NAME, partitions => Partitions23}],
 
     meck:expect(
         kamock_sync_group,
         handle_sync_group_request,
-        ['_', '_'],
-        fun(_Req = #{correlation_id := CorrelationId}, _Env) ->
-            #{
-                protocol_name => ?PROTOCOL_NAME,
-                protocol_type => ?PROTOCOL_TYPE,
-                correlation_id => CorrelationId,
-                error_code => 0,
-                throttle_time_ms => 0,
-
-                assignment => Assignment01
-            }
-        end
+        kamock_sync_group:assign(Assignment01)
     ),
 
     GroupId = ?GROUP_ID,
@@ -208,18 +190,7 @@ leader_revoke_and_reassign() ->
     meck:expect(
         kamock_sync_group,
         handle_sync_group_request,
-        ['_', '_'],
-        fun(_Req = #{correlation_id := CorrelationId}, _Env) ->
-            #{
-                protocol_name => ?PROTOCOL_NAME,
-                protocol_type => ?PROTOCOL_TYPE,
-                correlation_id => CorrelationId,
-                error_code => 0,
-                throttle_time_ms => 0,
-
-                assignment => Assignment23
-            }
-        end
+        kamock_sync_group:assign(Assignment23)
     ),
 
     meck:expect(
@@ -355,28 +326,16 @@ offset_commit_from_consumer_callback() ->
     % Setup consumer callback
     meck:new(offset_commit_callback, [non_strict]),
     meck:expect(offset_commit_callback, init, fun(_T, _P, [Ref]) ->
-        {ok, {Ref, []}}
+        {ok, Ref}
     end),
-    meck:expect(offset_commit_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(offset_commit_callback, handle_partition_data, fun(T, P, PD, St = Ref) ->
+        {Messages, _} = kafine_partition_data:flatten(PD),
+        % Commit the offset of the last message in batch. This is what kafire does; it's unconventional.
+        #{offset := O} = lists:last(Messages),
+        Offsets = #{T => #{P => O}},
+        kafine_eager_rebalance:offset_commit(Ref, Offsets),
         {ok, St}
     end),
-    % We need to batch messages ourselves
-    meck:expect(offset_commit_callback, handle_record, fun(_T, _P, M, {Ref, Ms}) ->
-        {ok, {Ref, [Ms] ++ [M]}}
-    end),
-    % We commit offsets in the consumer callback end_record_batch
-    Topics = [?TOPIC_NAME],
-    meck:expect(
-        offset_commit_callback,
-        end_record_batch,
-        fun(T, P, _N, _Info, St = {Ref, Ms}) ->
-            % Commit the offset of the last message in batch. This is what kafire does; it's unconventional.
-            #{offset := O} = lists:last(Ms),
-            Offsets = #{T => #{P => O}},
-            kafine_eager_rebalance:offset_commit(Ref, Offsets),
-            {ok, St}
-        end
-    ),
     % 'Produce' up to offset 2 (offset 2 is an empty message)
     MessageBuilder = fun(T, Partition, Offset) ->
         MessageId = iolist_to_binary(
@@ -393,6 +352,7 @@ offset_commit_from_consumer_callback() ->
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
     ClientId = <<"consumer_a">>,
     GroupId = ?GROUP_ID,
+    Topics = [?TOPIC_NAME],
     {ok, _} = kafine:start_group_consumer(
         ?CONSUMER_REF,
         Broker,
@@ -410,9 +370,7 @@ offset_commit_from_consumer_callback() ->
     ),
 
     % Wait for the messages to be processed
-    % by default, end_record_batch is called once per partition per message on the mock broker
-    % so waiting for it be called 8 times means it will process 2 messages on each partition
-    ?assertWait(8, offset_commit_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
+    ?assertWait(8, offset_commit_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS),
 
     % Make a offset fetch call to assert that we committed the offsets
     {ok, C} = kafine_connection:start_link(Broker, #{}),

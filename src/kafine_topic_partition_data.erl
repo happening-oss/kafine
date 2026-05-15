@@ -6,6 +6,7 @@
     put/4,
     get/3,
     get/4,
+    find/3,
     is_key/3,
     remove/3,
     take/3,
@@ -14,6 +15,7 @@
     fold/3,
     any/2,
     filter/2,
+    filter_keys/2,
     map/2,
     filtermap/2,
     split_with/2,
@@ -73,6 +75,16 @@ get(Topic, Partition, TopicPartitionData) ->
 
 get(Topic, Partition, TopicPartitionData, Default) ->
     kafine_maps:get([Topic, Partition], TopicPartitionData, Default).
+
+-spec find(
+    Topic :: kafine:topic(),
+    Partition :: kafine:partition(),
+    TopicPartitionData :: t(DataType)
+) -> {ok, DataType} | error when
+    DataType :: dynamic().
+
+find(Topic, Partition, TopicPartitionData) ->
+    kafine_maps:find([Topic, Partition], TopicPartitionData).
 
 -spec is_key(
     Topic :: kafine:topic(),
@@ -205,6 +217,36 @@ filter(Pred, TopicPartitionData) ->
             case FilteredPartitions =:= #{} of
                 true -> false;
                 false -> {true, FilteredPartitions}
+            end
+        end,
+        TopicPartitionData
+    ).
+
+-spec filter_keys(
+    Pred :: fun(
+        (Topic :: kafine:topic(), Partition :: kafine:partition(), Data :: DataType) -> boolean()
+    ),
+    TopicPartitionData :: t(DataType)
+) -> kafine_topic_partitions:t() when
+    DataType :: dynamic().
+
+filter_keys(Pred, TopicPartitionData) ->
+    maps:filtermap(
+        fun(Topic, Partitions) ->
+            FilteredPartitions =
+                maps:fold(
+                    fun(Partition, Data, Acc) ->
+                        case Pred(Topic, Partition, Data) of
+                            true -> [Partition | Acc];
+                            false -> Acc
+                        end
+                    end,
+                    [],
+                    Partitions
+                ),
+            case FilteredPartitions of
+                [] -> false;
+                _ -> {true, FilteredPartitions}
             end
         end,
         TopicPartitionData

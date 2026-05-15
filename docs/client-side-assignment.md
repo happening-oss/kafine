@@ -2,6 +2,8 @@
 
 Kafine supports client side (consumer) rebalancing, as described [here][kcsap].
 
+This is the "eager", stop-the-world protocol, as added in Kafka 0.9.0.
+
 [kcsap]: https://cwiki.apache.org/confluence/display/KAFKA/Kafka+Client-side+Assignment+Proposal
 
 Here's a sequence diagram with 3 members.

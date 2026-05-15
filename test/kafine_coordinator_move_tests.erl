@@ -2,7 +2,6 @@
 
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kafcod/include/error_code.hrl").
-%-include_lib("kernel/include/logger.hrl").
 
 -include("assert_meck.hrl").
 -include("assert_received.hrl").
@@ -24,6 +23,7 @@
         subscription_callback => {kafine_parallel_subscription_callback, #{}}
     })
 ).
+-define(EMPTY_OWNED_PARTITIONS, kafine_topic_partitions:new()).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -61,10 +61,10 @@ coordinator_move() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -119,7 +119,7 @@ coordinator_move_during_get_member_id() ->
 
     % getting member id (join group with empty member id) should detect coordinator moved, find
     % new coordinator and retry
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     ?assertMatch({error, {member_id_required, _}}, receive_response(ReqId)),
     ?assertCalled(kamock_find_coordinator, handle_find_coordinator_request, '_'),
     ?assertCalled(kafine_connection, start_link, [
@@ -144,7 +144,7 @@ coordinator_move_during_join_group() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
     meck:reset(kamock_find_coordinator),
@@ -154,7 +154,7 @@ coordinator_move_during_join_group() ->
     % Switch coordinator node
     set_coordinator(Broker2),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     ?assertMatch({ok, _}, receive_response(ReqId2)),
     ?assertCalled(kamock_find_coordinator, handle_find_coordinator_request, '_'),
     ?assertCalled(kafine_connection, start_link, [
@@ -179,10 +179,10 @@ coordinator_move_during_sync_group() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -225,10 +225,10 @@ coordinator_move_during_leave_group() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -273,10 +273,10 @@ coordinator_move_during_offset_fetch() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),

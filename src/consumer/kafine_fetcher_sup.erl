@@ -21,7 +21,7 @@ init([Ref, ConnectionOptions, ConsumerOptions, TopicOptions, Metadata]) ->
             id => node_fetcher_sup,
             start =>
                 {kafine_node_fetcher_sup, start_link, [
-                    Ref, ConnectionOptions, ConsumerOptions, TopicOptions
+                    Ref, ConnectionOptions, ConsumerOptions
                 ]},
             restart => permanent,
             shutdown => infinity,
@@ -30,7 +30,7 @@ init([Ref, ConnectionOptions, ConsumerOptions, TopicOptions, Metadata]) ->
         },
         #{
             id => fetcher,
-            start => {kafine_fetcher, start_link, [Ref, Metadata]},
+            start => {kafine_fetcher, start_link, [Ref, ConsumerOptions, TopicOptions, Metadata]},
             restart => permanent,
             shutdown => 5000,
             type => worker,

@@ -157,7 +157,14 @@ get_leader(Connection, TopicName, PartitionIndex) when is_pid(Connection) ->
 % Or, to look at it another way: coupling tests that don't particularly care about Produce to the tests specifically for
 % Produce is a bad idea.
 produce_message(Broker, TopicName, PartitionIndex, Message) ->
-    Records = kafcod_message_set:prepare_message_set(#{compression => none}, [Message]),
+    Message1 =
+        case Message of
+            #{timestamp := _} ->
+                Message;
+            _ ->
+                Message#{timestamp => os:system_time(millisecond)}
+        end,
+    Records = kafcod_message_set:prepare_message_set(#{compression => none}, [Message1]),
     Leader = get_leader(Broker, TopicName, PartitionIndex),
     {ok, C} = kafine_connection:start_link(Leader, #{client_id => ?CLIENT_ID}),
 

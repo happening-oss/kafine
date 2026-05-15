@@ -6,7 +6,7 @@
 
 -export([
     start_link/0,
-    start_child/3,
+    start_child/4,
     stop_child/1,
     stop/0
 ]).
@@ -20,12 +20,15 @@ start_link() ->
         []
     ).
 
-start_child(Ref, Bootstrap, ConnectionOptions) ->
+start_child(Ref, Bootstrap, ConnectionOptions, ProducerOptions) ->
     supervisor:start_child(
         ?MODULE,
         #{
             id => Ref,
-            start => {kafine_producer_sup, start_link, [Ref, Bootstrap, ConnectionOptions]},
+            start =>
+                {kafine_producer_sup, start_link, [
+                    Ref, Bootstrap, ConnectionOptions, ProducerOptions
+                ]},
             restart => permanent,
             shutdown => infinity,
             type => supervisor,

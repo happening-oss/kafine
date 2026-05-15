@@ -6,6 +6,7 @@
 -define(PRODUCER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(TOPIC_NAME, iolist_to_binary(io_lib:format("~s___~s_t", [?MODULE, ?FUNCTION_NAME]))).
 -define(CONNECTION_OPTIONS, #{}).
+-define(PRODUCER_OPTIONS, #{}).
 -define(PARTITION_1, 1).
 
 all_test_() ->
@@ -35,18 +36,15 @@ compression(Compression) ->
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
 
-    {ok, _} = kafine:start_producer(?PRODUCER_REF, Broker, ?CONNECTION_OPTIONS),
+    Ref = {?PRODUCER_REF, Compression},
+    ProducerOptions = maps:put(compression, Compression, ?PRODUCER_OPTIONS),
+    {ok, _} = kafine:start_producer(Ref, Broker, ?CONNECTION_OPTIONS, ProducerOptions),
 
-    BatchAttributes = #{compression => Compression},
-    {ok, #{error_code := ?NONE}} = kafine_producer:produce(
-        ?PRODUCER_REF, ?TOPIC_NAME, ?PARTITION_1, #{}, BatchAttributes, [
-            #{
-                key => <<"key">>,
-                value => <<"value">>,
-                headers => []
-            }
-        ]
-    ),
+    ok = kafine_producer:produce_sync(Ref, ?TOPIC_NAME, ?PARTITION_1, #{
+        key => <<"key">>,
+        value => <<"value">>,
+        headers => []
+    }),
 
     % We should see some telemetry from kafcod that tells us about the compression.
     ?assertMatch(
@@ -70,7 +68,7 @@ compression(Compression) ->
     #{index := ?PARTITION_1, records := [RecordBatch]} = PartitionProduceData,
     ?assertMatch(#{attributes := #{compression := Compression}}, RecordBatch),
 
-    kafine:stop_producer(?PRODUCER_REF),
+    kafine:stop_producer(Ref),
     kamock_broker:stop(Broker),
     telemetry:detach(TelemetryRef),
     ok.

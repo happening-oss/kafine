@@ -42,11 +42,12 @@ snapshot_parity_resumes_state() ->
     meck:expect(
         kamock_metadata_response_topic,
         make_metadata_response_topic,
-        kamock_metadata_response_topic:partitions(lists:seq(0, PartitionCount - 1))
+        kamock_metadata_response_topic:partitions(PartitionCount)
     ),
 
     meck:expect(kamock_list_offsets_partition_response, make_list_offsets_partition_response, [
         {[<<"snapshot">>, '_', '_'], kamock_list_offsets_partition_response:range(11667, 11668)},
+        {[<<"state">>, '_', '_'], kamock_list_offsets_partition_response:range(20156, 20157)},
         {['_', '_', '_'], kamock_list_offsets_partition_response:range(0, 0)}
     ]),
 
@@ -58,6 +59,7 @@ snapshot_parity_resumes_state() ->
 
     meck:expect(kamock_partition_data, make_partition_data, [
         {[<<"snapshot">>, '_', '_'], kamock_partition_data:range(11667, 11668, MessageBuilder)},
+        {[<<"state">>, '_', '_'], kamock_partition_data:range(20156, 20157, MessageBuilder)},
         {['_', '_', '_'], kamock_partition_data:empty()}
     ]),
 
@@ -66,22 +68,18 @@ snapshot_parity_resumes_state() ->
         (_T = <<"snapshot">>, _P, _O) -> {ok, ?CALLBACK_STATE};
         (_T = <<"state">>, _P, _O) -> {pause, ?CALLBACK_STATE}
     end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
-        {ok, St}
-    end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun
+    meck:expect(test_consumer_callback, handle_partition_data, fun
         (
-            _T = <<"snapshot">>, P, Offset, _Info = #{high_watermark := HWM}, St
+            _T = <<"snapshot">>, P, PartitionData, St
         ) ->
-            case HWM == Offset of
+            case kafine_partition_data:at_parity(PartitionData) of
                 true ->
                     ok = kafine_consumer:resume(?CONSUMER_REF, <<"state">>, P),
                     {pause, St};
                 false ->
                     {ok, St}
             end;
-        (_T, _P, _O, _I, St) ->
+        (_T, _P, _PD, St) ->
             {ok, St}
     end),
 
@@ -97,7 +95,7 @@ snapshot_parity_resumes_state() ->
     Topics = [<<"snapshot">>, <<"state">>],
     TopicOptions = #{
         <<"snapshot">> => #{offset_reset_policy => latest, initial_offset => -1},
-        <<"state">> => #{offset_reset_policy => earliest}
+        <<"state">> => #{offset_reset_policy => earliest, initial_offset => 0}
     },
     kafine:start_group_consumer(
         ?CONSUMER_REF,
@@ -112,22 +110,31 @@ snapshot_parity_resumes_state() ->
         ?FETCHER_METADATA
     ),
 
-    ?assertWait(
-        PartitionCount,
-        test_consumer_callback,
-        end_record_batch,
-        [<<"snapshot">>, '_', '_', '_', '_'],
-        ?WAIT_TIMEOUT_MS
-    ),
+    _ = [
+        ?assertWait(
+            test_consumer_callback,
+            handle_partition_data,
+            [<<"snapshot">>, P, meck:is(has_next_offset(11668)), '_'],
+            ?WAIT_TIMEOUT_MS
+        )
+     || P <- [0, 1, 2, 3]
+    ],
 
-    ?assertWait(
-        PartitionCount,
-        test_consumer_callback,
-        end_record_batch,
-        [<<"state">>, '_', '_', '_', '_'],
-        ?WAIT_TIMEOUT_MS
-    ),
+    _ = [
+        ?assertWait(
+            test_consumer_callback,
+            handle_partition_data,
+            [<<"state">>, P, meck:is(has_next_offset(20157)), '_'],
+            ?WAIT_TIMEOUT_MS
+        )
+     || P <- [0, 1, 2, 3]
+    ],
 
     kafine:stop_group_consumer(?CONSUMER_REF),
     kamock_cluster:stop(Cluster),
     ok.
+
+has_next_offset(ExpectedNextOffset) ->
+    fun(PartitionData) ->
+        kafine_partition_data:next_offset(PartitionData) =:= ExpectedNextOffset
+    end.

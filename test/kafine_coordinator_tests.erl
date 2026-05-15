@@ -24,6 +24,7 @@
         subscription_callback => {kafine_parallel_subscription_callback, #{}}
     })
 ).
+-define(EMPTY_OWNED_PARTITIONS, kafine_topic_partitions:new()).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 setup() ->
@@ -40,16 +41,24 @@ kafine_node_metadata_test_() ->
         fun connects_to_coordinator_broker/0,
         fun handles_offset_fetch_request/0,
         fun handles_parallel_offset_fetch_requests/0,
+        fun handles_offset_fetch_requests_while_disconnected/0,
         fun join_group_without_member_id/0,
         fun join_group_after_getting_member_id/0,
+        fun handles_join_group_request_while_disconnected/0,
         fun sync_group_with_single_member/0,
+        fun handles_sync_group_request_while_disconnected/0,
         fun heartbeat_success/0,
         fun heartbeat_during_rebalance/0,
+        fun handles_heartbeat_request_while_disconnected/0,
         fun leave_group/0,
+        fun handles_leave_group_request_while_disconnected/0,
         fun offset_commit/0,
         fun offset_commit_with_errors/0,
+        fun handles_offset_commit_while_disconnected/0,
         fun reconnects_on_disconnect/0,
-        fun applies_backoff_on_failed_reconnect/0
+        fun applies_backoff_on_failed_reconnect/0,
+        fun exits_if_backoff_exceeds_limit/0,
+        fun recovers_from_temporarily_unreachable_bootstrap_and_coordinator/0
     ]}.
 
 connects_to_coordinator_broker() ->
@@ -126,6 +135,58 @@ handles_parallel_offset_fetch_requests() ->
     ?assert(lists:member({ok, #{?TOPIC_NAME => #{1 => 34}}}, Results)),
     ?assert(lists:member({ok, #{?TOPIC_NAME_2 => #{2 => 56}}}, Results)).
 
+handles_offset_fetch_requests_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    % wait for startup
+    ?assertReceived({[kafine, coordinator, connected], _, _, _}),
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % fetch offsets while disconnected
+    CommittedOffsets = #{
+        ?TOPIC_NAME => #{0 => 12, 1 => 34},
+        ?TOPIC_NAME_2 => #{2 => 56}
+    },
+
+    configure_offsets(CommittedOffsets),
+
+    ReqIds0 = kafine_coordinator:reqids_new(),
+    ReqIds1 = kafine_coordinator:offset_fetch(Pid, #{?TOPIC_NAME => [0]}, ReqIds0),
+    ReqIds2 = kafine_coordinator:offset_fetch(Pid, #{?TOPIC_NAME => [1]}, ReqIds1),
+    ReqIds3 = kafine_coordinator:offset_fetch(Pid, #{?TOPIC_NAME_2 => [2]}, ReqIds2),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the offsets
+    Results = receive_responses(ReqIds3),
+
+    ?assert(lists:member({ok, #{?TOPIC_NAME => #{0 => 12}}}, Results)),
+    ?assert(lists:member({ok, #{?TOPIC_NAME => #{1 => 34}}}, Results)),
+    ?assert(lists:member({ok, #{?TOPIC_NAME_2 => #{2 => 56}}}, Results)).
+
 join_group_without_member_id() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
     {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
@@ -134,7 +195,7 @@ join_group_without_member_id() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     ?assertMatch({error, {member_id_required, _MemberId}}, receive_response(ReqId)).
 
 join_group_after_getting_member_id() ->
@@ -145,23 +206,67 @@ join_group_after_getting_member_id() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ExpectedMember = #{
-        member_id => MemberId,
-        metadata => #{
-            topics => ?TOPICS,
-            user_data => <<>>
-        },
-        group_instance_id => null
-    },
-
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    ExpectedTopics = ?TOPICS,
     ?assertMatch(
-        {ok, #{generation_id := _, leader := _, members := [ExpectedMember], protocol_name := _}},
+        {ok, #{
+            generation_id := _,
+            leader := _,
+            members := [
+                #{
+                    member_id := MemberId,
+                    metadata := #{
+                        topics := ExpectedTopics,
+                        user_data := <<>>
+                    },
+                    group_instance_id := null
+                }
+            ],
+            protocol_name := _
+        }},
         receive_response(ReqId2)
     ).
+
+handles_join_group_request_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    % wait for startup
+    ?assertReceived({[kafine, coordinator, connected], _, _, _}),
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % join group while disconnected
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the response
+    ?assertMatch({error, {member_id_required, _MemberId}}, receive_response(ReqId)).
 
 sync_group_with_single_member() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
@@ -171,10 +276,10 @@ sync_group_with_single_member() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -194,6 +299,61 @@ sync_group_with_single_member() ->
         receive_response(ReqId3)
     ).
 
+handles_sync_group_request_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % sync group while disconnected
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the response
+    ?assertEqual(
+        {ok, #{
+            user_data => <<>>,
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]}
+        }},
+        receive_response(ReqId3)
+    ).
+
 heartbeat_success() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
     {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
@@ -202,10 +362,10 @@ heartbeat_success() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -231,10 +391,10 @@ heartbeat_during_rebalance() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -264,6 +424,58 @@ heartbeat_during_rebalance() ->
     ReqId4 = kafine_coordinator:heartbeat(Pid, MemberId, GenerationId),
     ?assertEqual({error, rebalance_in_progress}, receive_response(ReqId4)).
 
+handles_heartbeat_request_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+    {ok, _} = receive_response(ReqId3),
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % heartbeat while disconnected
+    ReqId4 = kafine_coordinator:heartbeat(Pid, MemberId, GenerationId),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the response
+    ?assertEqual(ok, receive_response(ReqId4)).
+
 leave_group() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
     {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
@@ -272,10 +484,10 @@ leave_group() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -307,6 +519,71 @@ leave_group() ->
         ]
     ).
 
+handles_leave_group_request_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+    {ok, _} = receive_response(ReqId3),
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    meck:new(kamock_leave_group, [passthrough]),
+
+    % leave group while disconnected
+    ReqId4 = kafine_coordinator:leave_group(Pid, MemberId),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the response and leave group
+    ?assertEqual(ok, receive_response(ReqId4)),
+
+    ?assertCalled(
+        kamock_leave_group,
+        handle_leave_group_request,
+        [
+            meck:is(fun(#{group_id := G, members := [#{member_id := M}]}) ->
+                G =:= ?GROUP_ID andalso M =:= MemberId
+            end),
+            '_'
+        ]
+    ).
+
 offset_commit() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
     {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
@@ -315,10 +592,10 @@ offset_commit() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -364,10 +641,10 @@ offset_commit_with_errors() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -436,6 +713,78 @@ offset_commit_with_errors() ->
         receive_responses(ReqIds)
     ).
 
+handles_offset_commit_while_disconnected() ->
+    {ok, _, [Bootstrap, Coordinator = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(
+        ?CLUSTER_REF
+    ),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff]
+    ]),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+    {ok, _} = receive_response(ReqId3),
+
+    % take the broker down
+    kamock_broker:stop(Coordinator),
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % offset commit while disconnected
+    OffsetsToCommit = #{
+        ?TOPIC_NAME => #{0 => 100, 1 => 200},
+        ?TOPIC_NAME_2 => #{2 => 300}
+    },
+
+    ReqIds = kafine_coordinator:offset_commit(
+        Pid,
+        MemberId,
+        GenerationId,
+        OffsetsToCommit,
+        test_offset_commit,
+        kafine_coordinator:reqids_new()
+    ),
+
+    % Bring the broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % Should eventually receive the response
+    ExpectedResult = #{
+        ?TOPIC_NAME => #{0 => ok, 1 => ok},
+        ?TOPIC_NAME_2 => #{2 => ok}
+    },
+
+    ?assertEqual(
+        [{ok, ExpectedResult, 0}],
+        receive_responses(ReqIds)
+    ).
+
 reconnects_on_disconnect() ->
     {ok, _, [Broker | _]} = kamock_cluster:start(?CLUSTER_REF),
     {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
@@ -444,10 +793,10 @@ reconnects_on_disconnect() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -498,7 +847,6 @@ applies_backoff_on_failed_reconnect() ->
         kamock_find_coordinator:return(Coordinator)
     ),
     meck:expect(kafine_backoff, init, fun(_) -> {backoff_state, 1} end),
-    meck:expect(kafine_backoff, reset, fun(State) -> State end),
 
     {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
 
@@ -506,10 +854,10 @@ applies_backoff_on_failed_reconnect() ->
         ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
     ),
 
-    ReqId = kafine_coordinator:join_group(Pid, <<>>),
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
     {error, {member_id_required, MemberId}} = receive_response(ReqId),
 
-    ReqId2 = kafine_coordinator:join_group(Pid, MemberId),
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
     {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
         ReqId2
     ),
@@ -530,8 +878,8 @@ applies_backoff_on_failed_reconnect() ->
         [kamock, protocol, connected]
     ]),
 
+    meck:reset(kafine_backoff),
     meck:expect(kafine_backoff, init, fun(_) -> {backoff_state, 1} end),
-    meck:expect(kafine_backoff, reset, fun(State) -> State end),
     meck:expect(kafine_backoff, backoff, [
         {[{backoff_state, 1}], {50, {backoff_state, 2}}},
         {[{backoff_state, '_'}], {50, {backoff_state, 3}}}
@@ -555,11 +903,127 @@ applies_backoff_on_failed_reconnect() ->
     % should connect and reset backoff state
     ?assertReceived({[kamock, protocol, connected], _, _, _}),
     ?assertReceived({[kafine, coordinator, connected], _, _, _}),
-    ?assertCalled(kafine_backoff, reset, [{backoff_state, 3}]),
+    ?assertWait(kafine_backoff, init, '_', ?WAIT_TIMEOUT_MS),
 
     kafine_coordinator:stop(Pid),
     kamock_broker:stop(Coordinator2),
     kamock_broker:stop(Bootstrap).
+
+exits_if_backoff_exceeds_limit() ->
+    {ok, _, [Bootstrap, Coordinator | _]} = kamock_cluster:start(?CLUSTER_REF),
+    meck:expect(
+        kamock_find_coordinator,
+        handle_find_coordinator_request,
+        kamock_find_coordinator:return(Coordinator)
+    ),
+    meck:expect(kafine_backoff, init, fun(_) -> {backoff_state, 1} end),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Bootstrap, ?CONNECTION_OPTIONS),
+
+    process_flag(trap_exit, true),
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+    {ok, _} = receive_response(ReqId3),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, coordinator, backoff],
+        [kamock, protocol, connected]
+    ]),
+
+    meck:expect(kafine_backoff, init, fun(_) -> {backoff_state, 1} end),
+    meck:expect(kafine_backoff, backoff, [
+        {[{backoff_state, 1}], {50, {backoff_state, 2}}},
+        {[{backoff_state, '_'}], limit_exceeded}
+    ]),
+
+    % Stop the broker, dropping connections and failing future attempts
+    kamock_broker:stop(Coordinator),
+
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % should back off, then exit after limit exceeded
+    ?assertReceived({[kafine, coordinator, backoff], _, _, _}),
+    ?assertCalled(kafine_backoff, backoff, [{backoff_state, 1}]),
+
+    ?assertReceived({'EXIT', Pid, backoff_limit_exceeded}),
+    ?assertCalled(kafine_backoff, backoff, [{backoff_state, 2}]).
+
+recovers_from_temporarily_unreachable_bootstrap_and_coordinator() ->
+    % This test covers a specific single-broker case where the broker was taken down, and
+    % kafine_coordinator spammed find_coordinator requests at backing-off kafine_bootstrap until
+    % everything died
+
+    % coordinator and broker are the same
+    {ok, _, [Broker = #{node_id := NodeId, port := Port} | _]} = kamock_cluster:start(?CLUSTER_REF),
+
+    {ok, _} = kafine_bootstrap:start_link(?REF, Broker, ?CONNECTION_OPTIONS),
+
+    {ok, Pid} = kafine_coordinator:start_link(
+        ?REF, ?GROUP_ID, ?TOPICS, ?CONNECTION_OPTIONS, ?MEMBERSHIP_OPTIONS
+    ),
+
+    ReqId = kafine_coordinator:join_group(Pid, <<>>, ?EMPTY_OWNED_PARTITIONS),
+    {error, {member_id_required, MemberId}} = receive_response(ReqId),
+
+    ReqId2 = kafine_coordinator:join_group(Pid, MemberId, ?EMPTY_OWNED_PARTITIONS),
+    {ok, #{generation_id := GenerationId, protocol_name := ProtocolName}} = receive_response(
+        ReqId2
+    ),
+    Assignment = #{
+        MemberId => #{
+            assigned_partitions => #{?TOPIC_NAME => [0, 1, 2, 3], ?TOPIC_NAME_2 => [0, 1, 2, 3]},
+            user_data => <<>>
+        }
+    },
+
+    ReqId3 = kafine_coordinator:sync_group(Pid, MemberId, GenerationId, ProtocolName, Assignment),
+    {ok, _} = receive_response(ReqId3),
+
+    telemetry_test:attach_event_handlers(self(), [
+        [kafine, coordinator, connected],
+        [kafine, coordinator, disconnected],
+        [kafine, bootstrap, backoff],
+        [kafine, coordinator, backoff],
+        [kamock, protocol, connected]
+    ]),
+
+    % Stop the broker, dropping connections and failing future attempts
+    kamock_broker:stop(Broker),
+
+    ?assertReceived({[kafine, coordinator, disconnected], _, _, _}),
+
+    % wait for backoff
+    ?assertReceived({[kafine, bootstrap, backoff], _, _, _}),
+    ?assertReceived({[kafine, coordinator, backoff], _, _, _}),
+    ?assertCalled(kafine_backoff, backoff, '_'),
+
+    % Bring broker back up
+    {ok, _} = kamock_broker:start(?BROKER_REF, #{node_id => NodeId, port => Port}),
+
+    % should connect and reset backoff state
+    ?assertReceived({[kamock, protocol, connected], _, _, _}),
+    ?assertReceived({[kafine, coordinator, connected], _, _, _}),
+
+    kafine_coordinator:stop(Pid).
 
 configure_offsets(Offsets) ->
     meck:expect(
@@ -588,7 +1052,7 @@ do_receive_response(ReqIds) ->
                 {{error, {Reason, _}}, _, NewReqIds} ->
                     {{error, Reason}, NewReqIds};
                 _ ->
-                    receive_response(ReqIds)
+                    do_receive_response(ReqIds)
             end
     after ?WAIT_TIMEOUT_MS ->
         error(timeout)

@@ -17,14 +17,10 @@ setup() ->
     meck:expect(
         kamock_metadata_response_topic,
         make_metadata_response_topic,
-        fun
-            (Topic = #{name := ?TOPIC_NAME}, Env) ->
-                F = kamock_metadata_response_topic:partitions([0, 1]),
-                F(Topic, Env);
-            (Topic = #{name := ?TOPIC_NAME_2}, Env) ->
-                F = kamock_metadata_response_topic:partitions([0, 1, 2]),
-                F(Topic, Env)
-        end
+        kamock_metadata_response_topic:partitions(#{
+            ?TOPIC_NAME => 2,
+            ?TOPIC_NAME_2 => 3
+        })
     ),
     ok.
 
@@ -227,7 +223,7 @@ refresh_picks_up_updated_metadata() ->
     meck:expect(
         kamock_metadata_response_topic,
         make_metadata_response_topic,
-        kamock_metadata_response_topic:partitions([0, 1, 2])
+        kamock_metadata_response_topic:partitions(3)
     ),
 
     ok = kafine_metadata_cache:refresh(?REF, [?TOPIC_NAME, ?TOPIC_NAME_2]),
@@ -261,13 +257,13 @@ concurrent_refresh_attempts_only_fetch_once() ->
         [kafine, metadata, refresh, start]
     ]),
 
-    % Add a delay to metadata responses so we can send another refresh while the first is in flgiht
+    % Add a delay to metadata responses so we can send another refresh while the first is in flight
     meck:expect(
         kamock_metadata_response_topic,
         make_metadata_response_topic,
         fun(Topic, Env) ->
             timer:sleep(50),
-            F = kamock_metadata_response_topic:partitions([0, 1]),
+            F = kamock_metadata_response_topic:partitions(2),
             F(Topic, Env)
         end
     ),
@@ -299,7 +295,7 @@ concurrent_refresh_with_additional_topics_fetches_all_new_topics() ->
         make_metadata_response_topic,
         fun(Topic, Env) ->
             timer:sleep(50),
-            F = kamock_metadata_response_topic:partitions([0, 1]),
+            F = kamock_metadata_response_topic:partitions(2),
             F(Topic, Env)
         end
     ),

@@ -14,6 +14,7 @@
     ?TOPIC_NAME => #{initial_offset => earliest},
     ?TOPIC_NAME_2 => #{initial_offset => -1}
 }).
+-define(FETCHER_METADATA, #{}).
 
 -define(WAIT_TIMEOUT_MS, 2_000).
 
@@ -22,13 +23,9 @@
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, undefined} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
-
-    meck:new(kamock_offset_fetch_response_partition, [passthrough]),
 
     meck:new(kafine_fetcher),
     meck:expect(kafine_fetcher, whereis, fun(_) -> self() end),
@@ -38,7 +35,7 @@ setup() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(_, _, _, _) ->
+        fun(_, _, _, _, _) ->
             {ok, make_link_pid()}
         end
     ),
@@ -81,7 +78,8 @@ subscribe_partitions_starts_proc_for_each_topic_partition() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -107,7 +105,8 @@ subscribe_partitions_uses_topic_initial_offset_if_no_committed_offset() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -133,7 +132,8 @@ subscribe_partitions_uses_topic_initial_offset_if_no_offset_fetcher() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -158,7 +158,8 @@ restarts_exiting_partition_handler() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -168,7 +169,7 @@ restarts_exiting_partition_handler() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, HandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -179,13 +180,13 @@ restarts_exiting_partition_handler() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     % future starts need a fresh pid
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(_, _, _, _) -> {ok, make_link_pid()} end
+        fun(_, _, _, _, _) -> {ok, make_link_pid()} end
     ),
 
     % We need an offset to re-start at, ensure it's different
@@ -206,7 +207,8 @@ exits_on_repeated_partition_handler_failure() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -216,7 +218,7 @@ exits_on_repeated_partition_handler_failure() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, HandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -227,14 +229,14 @@ exits_on_repeated_partition_handler_failure() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     % future starts need a fresh pid
     NewPid = make_link_pid(),
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(_, _, _, _) ->
+        fun(_, _, _, _, _) ->
             link(NewPid),
             {ok, NewPid}
         end
@@ -265,7 +267,8 @@ does_not_exit_if_multiple_different_handlers_fail() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -275,7 +278,7 @@ does_not_exit_if_multiple_different_handlers_fail() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, HandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -286,7 +289,7 @@ does_not_exit_if_multiple_different_handlers_fail() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     % future starts need a fresh pid
     NewHandlerPids = #{
@@ -295,7 +298,7 @@ does_not_exit_if_multiple_different_handlers_fail() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, NewHandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -321,7 +324,8 @@ uses_initial_offset_on_restart_if_no_committed_offset() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -331,7 +335,7 @@ uses_initial_offset_on_restart_if_no_committed_offset() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, HandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -342,13 +346,13 @@ uses_initial_offset_on_restart_if_no_committed_offset() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     % future starts need a fresh pid
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(_, _, _, _) -> {ok, make_link_pid()} end
+        fun(_, _, _, _, _) -> {ok, make_link_pid()} end
     ),
 
     % We need an offset to re-start at, ensure it's different
@@ -369,7 +373,8 @@ uses_initial_offset_on_restart_if_no_offset_fetcher() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -379,7 +384,7 @@ uses_initial_offset_on_restart_if_no_offset_fetcher() ->
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(?REF, {Topic, Partition}, _, _) ->
+        fun(?REF, {Topic, Partition}, _, _, _) ->
             HandlerPid = kafine_topic_partition_data:get(Topic, Partition, HandlerPids),
             link(HandlerPid),
             {ok, HandlerPid}
@@ -390,13 +395,13 @@ uses_initial_offset_on_restart_if_no_offset_fetcher() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     % future starts need a fresh pid
     meck:expect(
         kafine_parallel_handler,
         start_link,
-        fun(_, _, _, _) -> {ok, make_link_pid()} end
+        fun(_, _, _, _, _) -> {ok, make_link_pid()} end
     ),
 
     meck:reset(kafine_parallel_handler),
@@ -414,7 +419,8 @@ unsubscribe_all_stops_all_partition_handlers() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -422,7 +428,7 @@ unsubscribe_all_stops_all_partition_handlers() ->
     {ok, Pid} = kafine_parallel_subscription_callback:subscribe_partitions(
         unused, AssignedPartitions, Pid
     ),
-    meck:wait(3, kafine_parallel_handler, start_link, 4, ?WAIT_TIMEOUT_MS),
+    meck:wait(3, kafine_parallel_handler, start_link, 5, ?WAIT_TIMEOUT_MS),
 
     {ok, Pid} = kafine_parallel_subscription_callback:unsubscribe_partitions(Pid),
 
@@ -438,7 +444,8 @@ can_resume_partition() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -469,7 +476,8 @@ applies_offset_adjustment() ->
                 callback_arg => ?CALLBACK_ARG,
                 offset_callback => test_offset_callback
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
@@ -489,7 +497,7 @@ assert_handler_started(Ref, Topic, Partition, Offset) ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [Ref, {Topic, Partition}, Offset, '_'],
+        [Ref, {Topic, Partition}, Offset, '_', '_'],
         ?WAIT_TIMEOUT_MS
     ).
 
@@ -544,7 +552,11 @@ check_restart_cleans_old_restarts() ->
     TopicPartition = {?TOPIC_NAME, 0},
     TopicPartition2 = {?TOPIC_NAME, 1},
     TopicPartition3 = {?TOPIC_NAME_2, 2},
-    Restarts = [{TopicPartition, Now - 5_010}, {TopicPartition2, Now - 5_015}, {TopicPartition3, Now - 5_020}],
+    Restarts = [
+        {TopicPartition, Now - 5_010},
+        {TopicPartition2, Now - 5_015},
+        {TopicPartition3, Now - 5_020}
+    ],
     Result = kafine_parallel_subscription_impl:check_restart(TopicPartition, Restarts),
     {true, [{TopicPartition, NewRestartTime}]} = Result,
     ?assert(NewRestartTime > Now - 10 andalso NewRestartTime =< Now).

@@ -1,6 +1,8 @@
 -module(kafine_consumer).
 
 -export([
+    set_next_offset/4,
+
     resume/3,
     resume/4,
 
@@ -12,6 +14,9 @@
 -export_type([ref/0]).
 
 -type ref() :: term().
+
+set_next_offset(Ref, Topic, Partition, Offset) ->
+    kafine_resumer:set_next_offset(Ref, Topic, Partition, Offset).
 
 resume(Ref, Topic, Partition) ->
     kafine_resumer:resume(Ref, Topic, Partition).

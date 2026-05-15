@@ -172,7 +172,10 @@ partitions_move_repeatedly() ->
     Wait = fun() ->
         [
             ?assertWait(
-                test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(P), '_', '_'], ?WAIT_TIMEOUT_MS
+                test_fetcher_callback,
+                handle_partition_data,
+                ['_', '_', for_partition(P), '_', '_'],
+                ?WAIT_TIMEOUT_MS
             )
          || P <- Partitions
         ],
@@ -243,7 +246,10 @@ offset_reset_policy_is_preserved() ->
     fetch_all(?CONSUMER_REF, TopicName, Partitions, 0),
 
     ?assertWait(
-        test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(0), '_', '_'], ?WAIT_TIMEOUT_MS
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', '_', for_partition(0), '_', '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     % Move the partitions. We've got an offset; we don't expect the reset policy to be called.

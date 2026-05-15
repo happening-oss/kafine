@@ -2,7 +2,7 @@
 
 -behaviour(supervisor).
 
--export([start_link/2]).
+-export([start_link/3]).
 
 -export([
     start_child/3,
@@ -19,15 +19,16 @@ via(Ref) ->
 
 -spec start_link(
     Ref :: kafine:consumer_ref(),
-    ConnectionOptions :: kafine:connection_options()
+    ConnectionOptions :: kafine:connection_options(),
+    ProducerOptions :: kafine:producer_options()
 ) ->
     supervisor:startlink_ret().
 
-start_link(Ref, ConnectionOptions) ->
+start_link(Ref, ConnectionOptions, ProducerOptions) ->
     supervisor:start_link(
         via(Ref),
         ?MODULE,
-        [Ref, ConnectionOptions]
+        [Ref, ConnectionOptions, ProducerOptions]
     ).
 
 -spec start_child(Ref :: kafine:consumer_ref(), Owner :: pid(), Broker :: kafine:broker()) ->
@@ -56,7 +57,7 @@ list_children(Ref) ->
         end,
     [Pid || {_Id, Pid, _Type, _Modules} <- Children, is_pid(Pid)].
 
-init([Ref, ConnectionOptions]) ->
+init([Ref, ConnectionOptions, ProducerOptions]) ->
     kafine_proc_lib:set_label({?MODULE, Ref}),
     {
         ok,
@@ -69,7 +70,10 @@ init([Ref, ConnectionOptions]) ->
             [
                 #{
                     id => kafine_node_producer,
-                    start => {kafine_node_producer, start_link, [Ref, ConnectionOptions]},
+                    start =>
+                        {kafine_node_producer, start_link, [
+                            Ref, ConnectionOptions, ProducerOptions
+                        ]},
                     restart => transient,
                     shutdown => 5000,
                     type => worker,

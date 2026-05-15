@@ -69,8 +69,7 @@ stop(Ref) ->
         state := term(),
         broker := kafine:broker(),
         connection_options := kafine:connection_options(),
-        connection := pid() | undefined,
-        pending_requests := [{dynamic(), gen_statem:from()}]
+        connection := pid() | undefined
     }.
 
 info(RefOrPid) ->
@@ -117,18 +116,12 @@ send_request(RefOrPid, Request) when is_pid(RefOrPid) ->
 send_request(Ref, Request) ->
     gen_statem:send_request(via(Ref), Request).
 
--type request() ::
-    {get_metadata, kafine_topic_partitions:t()} | {find_coordinator, binary()}.
-
 -record(data, {
     ref :: ref(),
     broker :: kafine:broker(),
     connections_options :: kafine:connection_options(),
     backoff_state :: kafine_backoff:state(),
-    connection = undefined :: kafine:connection() | undefined,
-    pending_requests = [] :: [
-        {Request :: request(), From :: gen_statem:from()}
-    ]
+    connection = undefined :: kafine:connection() | undefined
 }).
 
 callback_mode() -> handle_event_function.
@@ -153,7 +146,7 @@ handle_event(
     Data = #data{
         ref = Ref,
         broker = Broker,
-        connections_options = ConnectionOptions,
+        connections_options = ConnectionOptions = #{backoff := BackoffConfig},
         backoff_state = BackoffState
     }
 ) ->
@@ -164,43 +157,28 @@ handle_event(
             telemetry:execute([kafine, bootstrap, connected], #{}, #{ref => Ref}),
             NewData = Data#data{
                 connection = Connection,
-                backoff_state = kafine_backoff:reset(BackoffState)
+                backoff_state = kafine_backoff:init(BackoffConfig)
             },
-            {next_state, connected, NewData, {next_event, internal, process_pending}};
+            {next_state, connected, NewData};
         {error, Reason} ->
-            ?LOG_WARNING("Failed to establish connection to bootstrap broker: ~p", [Reason]),
-            {DelayMs, NewBackoffState} = kafine_backoff:backoff(BackoffState),
-            telemetry:execute(
-                [kafine, bootstrap, backoff],
-                #{delay_ms => DelayMs},
-                #{ref => Ref, reason => Reason}
-            ),
-            NewData = Data#data{backoff_state = NewBackoffState},
-            {next_state, backoff, NewData, {state_timeout, DelayMs, connect}}
-    end;
-handle_event(
-    internal,
-    process_pending,
-    connected,
-    #data{pending_requests = []}
-) ->
-    keep_state_and_data;
-handle_event(
-    internal,
-    process_pending,
-    connected,
-    Data = #data{
-        pending_requests = [{Request, From} | Rest]
-    }
-) ->
-    try
-        handle_request(Request, From, Data),
-        {keep_state, Data#data{pending_requests = Rest}, [{next_event, internal, process_pending}]}
-    catch
-        exit:{closed, _} ->
-            ?LOG_INFO("Connection lost during request"),
-            % Don't handle the disconnect here, handle the 'EXIT' message
-            keep_state_and_data
+            ?LOG_WARNING("Failed to connect to bootstrap broker at ~s: ~p", [
+                format_broker(Broker), Reason
+            ]),
+            case kafine_backoff:backoff(BackoffState) of
+                limit_exceeded ->
+                    ?LOG_ERROR(
+                        "Backoff limit exceeded when attempting to connect to bootstrap broker"
+                    ),
+                    {stop, backoff_limit_exceeded, Data};
+                {DelayMs, NewBackoffState} ->
+                    telemetry:execute(
+                        [kafine, bootstrap, backoff],
+                        #{delay_ms => DelayMs},
+                        #{ref => Ref, reason => Reason}
+                    ),
+                    NewData = Data#data{backoff_state = NewBackoffState},
+                    {next_state, backoff, NewData, {state_timeout, DelayMs, connect}}
+            end
     end;
 handle_event(
     {call, From},
@@ -209,25 +187,21 @@ handle_event(
     #data{
         broker = Broker,
         connections_options = ConnectionOptions,
-        connection = Connection,
-        pending_requests = PendingRequests
+        connection = Connection
     }
 ) ->
     Info = #{
         state => State,
         broker => Broker,
         connection_options => ConnectionOptions,
-        connection => Connection,
-        pending_requests => PendingRequests
+        connection => Connection
     },
     {keep_state_and_data, {reply, From, Info}};
 handle_event(
     {call, From},
     Request,
     connected,
-    Data = #data{
-        pending_requests = PendingRequests
-    }
+    Data
 ) ->
     try
         handle_request(Request, From, Data),
@@ -236,15 +210,15 @@ handle_event(
         exit:{closed, _} ->
             ?LOG_INFO("Connection lost during request"),
             % Don't handle the disconnect here, handle the 'EXIT' message
-            {keep_state, Data#data{pending_requests = PendingRequests ++ [{Request, From}]}}
+            {keep_state_and_data, postpone}
     end;
 handle_event(
-    {call, From},
-    Request,
-    disconnected,
-    Data = #data{pending_requests = PendingRequests}
+    {call, _From},
+    _Request,
+    _,
+    _Data
 ) ->
-    {keep_state, Data#data{pending_requests = PendingRequests ++ [{Request, From}]}};
+    {keep_state_and_data, postpone};
 handle_event(
     info,
     {'EXIT', Connection, Reason},
@@ -349,3 +323,6 @@ request_metadata(ApiKey, ApiVersion) ->
 
 request_metadata(ApiKey, ApiVersion, GroupId) ->
     #{api_key => ApiKey, api_version => ApiVersion, group_id => GroupId}.
+
+format_broker(#{host := Host, port := Port}) ->
+    iolist_to_binary(io_lib:format("~s:~B", [Host, Port])).

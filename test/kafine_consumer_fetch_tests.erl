@@ -1,11 +1,11 @@
 -module(kafine_consumer_fetch_tests).
 -include_lib("eunit/include/eunit.hrl").
-
 -include_lib("kafcod/include/error_code.hrl").
-
--include("history_matchers.hrl").
+-include_lib("kafcod/include/api_key.hrl").
 
 -elvis([{elvis_style, dont_repeat_yourself, disable}]).
+-elvis([{elvis_style, no_import, disable}]).
+-import(hamcrest_matchers, [all_of/1]).
 
 -define(BROKER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
@@ -21,11 +21,9 @@
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, dummy} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     ok.
 
@@ -42,7 +40,8 @@ kafine_node_consumer_test_() ->
         fun separate_produces_fetch_zero_offset/0,
         fun separate_produces_fetch_positive_offset/0,
         fun combined_produce_fetch_zero_offset/0,
-        fun combined_produce_fetch_positive_offset/0
+        fun combined_produce_fetch_positive_offset/0,
+        fun recovers_after_disconnect_during_fetch/0
     ]}.
 
 single_message_fetch() ->
@@ -58,25 +57,36 @@ single_message_fetch() ->
         [TopicName],
         ?TOPIC_OPTIONS,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS)]
+        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
     ),
 
     % We should see two record batches, one with a single message, one empty:
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
         [
-            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 1, 1),
-            ?handle_record(TopicName, ?PARTITION, <<"key0">>, <<"value0">>),
-            ?end_record_batch(TopicName, ?PARTITION, 1, 0, 1, 1),
-
-            ?begin_record_batch(TopicName, ?PARTITION, 1, 0, 1, 1),
-            ?end_record_batch(TopicName, ?PARTITION, 1, 0, 1, 1)
+            '_',
+            '_',
+            meck:is(
+                all_of([
+                    has_message_count(1),
+                    contains_message_matching(#{
+                        offset => 0, key => <<"key0">>, value => <<"value0">>
+                    })
+                ])
+            ),
+            '_'
         ],
-        meck:history(test_consumer_callback)
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -98,7 +108,7 @@ separate_produces_fetch_zero_offset() ->
         [TopicName],
         ?TOPIC_OPTIONS,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS)]
+        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
@@ -107,20 +117,17 @@ separate_produces_fetch_zero_offset() ->
     % We should see two record batches, one with our 3 messages, one empty. Note that the response actually has 3 record
     % batches in it and that we've flattened them into one. That's more of a naming thing, and maybe we want to revisit
     % that.
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
-        [
-            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 3, 3),
-            ?handle_record(TopicName, ?PARTITION, <<"key0">>, _),
-            ?handle_record(TopicName, ?PARTITION, <<"key1">>, _),
-            ?handle_record(TopicName, ?PARTITION, <<"key2">>, _),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-
-            ?begin_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3)
-        ],
-        meck:history(test_consumer_callback)
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(3)), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -147,27 +154,24 @@ separate_produces_fetch_positive_offset() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
     ),
 
-    % We should see two record batches, one with our expected messages, one empty. Note that the response actually has 3 record
-    % batches in it and that we've flattened them into one. That's more of a naming thing, and maybe we want to revisit
-    % that.
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
-        [
-            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION, 2, 0, 3, 3),
-            ?handle_record(TopicName, ?PARTITION, <<"key2">>, _),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-
-            ?begin_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3)
-        ],
-        meck:history(test_consumer_callback)
+    % We should see two record batches, one with our expected message, one empty.
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(1)), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -189,7 +193,7 @@ combined_produce_fetch_zero_offset() ->
         [TopicName],
         ?TOPIC_OPTIONS,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS)]
+        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
@@ -197,20 +201,17 @@ combined_produce_fetch_zero_offset() ->
 
     % We should see two record batches, one with our 3 messages, one empty. Note that in this case, the messages really
     % are in a single batch (unlike above).
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
-        [
-            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION, 0, 0, 3, 3),
-            ?handle_record(TopicName, ?PARTITION, <<"key0">>, _),
-            ?handle_record(TopicName, ?PARTITION, <<"key1">>, _),
-            ?handle_record(TopicName, ?PARTITION, <<"key2">>, _),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-
-            ?begin_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3),
-            ?end_record_batch(TopicName, ?PARTITION, 3, 0, 3, 3)
-        ],
-        meck:history(test_consumer_callback)
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(3)), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -237,26 +238,90 @@ combined_produce_fetch_positive_offset() ->
         [TopicName],
         TopicOptions,
         ?FETCHER_METADATA,
-        [parallel_callback(?CONSUMER_REF, TopicOptions)]
+        [parallel_callback(?CONSUMER_REF, TopicOptions, ?FETCHER_METADATA)]
     ),
     kafine_parallel_subscription_callback:subscribe_partitions(
         not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
     ),
 
     % We should see two record batches, one with our 2 messages, one empty.
-    meck:wait(2, test_consumer_callback, end_record_batch, '_', ?WAIT_TIMEOUT_MS),
-    ?assertMatch(
-        [
-            ?init_callback(TopicName, ?PARTITION, ?CALLBACK_ARGS),
-            ?begin_record_batch(TopicName, ?PARTITION, 3, 0, 5, 5),
-            ?handle_record(TopicName, ?PARTITION, <<"key3">>, _),
-            ?handle_record(TopicName, ?PARTITION, <<"key4">>, _),
-            ?end_record_batch(TopicName, ?PARTITION, 5, 0, 5, 5),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(2)), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
 
-            ?begin_record_batch(TopicName, ?PARTITION, 5, 0, 5, 5),
-            ?end_record_batch(TopicName, ?PARTITION, 5, 0, 5, 5)
+    kafine_consumer_sup:stop(Sup),
+    kamock_broker:stop(Broker),
+    ok.
+
+recovers_after_disconnect_during_fetch() ->
+    {ok, Broker} = kamock_broker:start(?BROKER_REF),
+    mock_single_produce(Broker, 1),
+
+    % Make the first fetch request fail with a connection close
+    meck:new(kamock_broker_handler, [passthrough]),
+    meck:expect(
+        kamock_broker_handler,
+        handle_request,
+        [
+            {
+                [?FETCH, '_', '_', '_'],
+                meck:seq([
+                    meck:exec(fun(_, _, _, _) -> stop end),
+                    meck:passthrough()
+                ])
+            },
+            {['_', '_', '_', '_'], meck:passthrough()}
+        ]
+    ),
+
+    TopicName = ?TOPIC_NAME,
+    {ok, Sup} = kafine_consumer_sup:start_link(
+        ?CONSUMER_REF,
+        Broker,
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        [TopicName],
+        ?TOPIC_OPTIONS,
+        ?FETCHER_METADATA,
+        [parallel_callback(?CONSUMER_REF, ?TOPIC_OPTIONS, ?FETCHER_METADATA)]
+    ),
+    kafine_parallel_subscription_callback:subscribe_partitions(
+        not_used, #{TopicName => [?PARTITION]}, ?CONSUMER_REF
+    ),
+
+    % We should see two record batches, one with a single message, one empty:
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        [
+            '_',
+            '_',
+            meck:is(
+                all_of([
+                    has_message_count(1),
+                    contains_message_matching(#{
+                        offset => 0, key => <<"key0">>, value => <<"value0">>
+                    })
+                ])
+            ),
+            '_'
         ],
-        meck:history(test_consumer_callback)
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        test_consumer_callback,
+        handle_partition_data,
+        ['_', '_', meck:is(has_message_count(0)), '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
     kafine_consumer_sup:stop(Sup),
@@ -309,21 +374,7 @@ mock_separate_produces(_Broker, MessageCount) ->
                 _FetchPartition = #{partition := PartitionIndex, fetch_offset := FetchOffset},
                 _Env
             ) when FetchOffset < LastOffset ->
-                % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
-                Timestamp = 1723657274686,
-                _FormattedTimestamp = calendar:system_time_to_rfc3339(
-                    Timestamp, [{unit, millisecond}, {offset, "Z"}]
-                ),
-
-                % Three record batches. Note the use of lists:seq(), below, to allow for differing start offsets.
-                RecordBatches = [
-                    make_record_batch(BaseOffset, Timestamp, [
-                        % Each with a single record.
-                        make_record(BaseOffset, 0)
-                    ])
-                 || BaseOffset <- lists:seq(FetchOffset, LastOffset - 1)
-                ],
-                make_partition_data(PartitionIndex, FirstOffset, LastOffset, RecordBatches);
+                make_separate_produces(PartitionIndex, FirstOffset, LastOffset, FetchOffset);
             (
                 _Topic,
                 _FetchPartition = #{partition := PartitionIndex, fetch_offset := FetchOffset},
@@ -340,34 +391,33 @@ mock_separate_produces(_Broker, MessageCount) ->
     ),
     ok.
 
+make_separate_produces(PartitionIndex, FirstOffset, LastOffset, FetchOffset) ->
+    % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
+    Timestamp = 1723657274686,
+    _FormattedTimestamp = calendar:system_time_to_rfc3339(
+        Timestamp, [{unit, millisecond}, {offset, "Z"}]
+    ),
+
+    % Three record batches. Note the use of lists:seq(), below, to allow for differing start offsets.
+    RecordBatches = [
+        make_record_batch(BaseOffset, Timestamp, [
+            % Each with a single record.
+            make_record(BaseOffset, 0)
+        ])
+     || BaseOffset <- lists:seq(FetchOffset, LastOffset - 1)
+    ],
+    make_partition_data(PartitionIndex, FirstOffset, LastOffset, RecordBatches).
+
 make_partition_data(PartitionIndex, FirstOffset, LastOffset, RecordBatches) ->
-    #{
-        partition_index => PartitionIndex,
-        error_code => ?NONE,
-        log_start_offset => FirstOffset,
-        high_watermark => LastOffset,
-        last_stable_offset => LastOffset,
-        aborted_transactions => [],
-        preferred_read_replica => -1,
-        % Here, 'records' is actually 'record batches'.
-        records => RecordBatches
-    }.
+    kamock_partition_data_builder:make_partition_data(
+        PartitionIndex, FirstOffset, LastOffset, RecordBatches
+    ).
 
 make_record_batch(BaseOffset, BaseTimestamp, Records) ->
-    #{
-        base_offset => BaseOffset,
-        partition_leader_epoch => 0,
-        magic => 2,
-        crc => -1,
-        attributes => #{compression => none},
-        last_offset_delta => length(Records) - 1,
-        base_timestamp => BaseTimestamp,
-        max_timestamp => BaseTimestamp,
-        producer_id => -1,
-        producer_epoch => -1,
-        base_sequence => -1,
-        records => Records
-    }.
+    LastOffsetDelta = length(Records) - 1,
+    kamock_partition_data_builder:make_record_batch(
+        BaseOffset, LastOffsetDelta, BaseTimestamp, Records
+    ).
 
 mock_single_produce(_Broker, MessageCount) ->
     % If, with a real broker, I do a Produce request with 3 messages, then a single Fetch request, then I get back a
@@ -408,21 +458,7 @@ mock_single_produce(_Broker, MessageCount) ->
                 _FetchPartition = #{partition := PartitionIndex, fetch_offset := FetchOffset},
                 _Env
             ) when FetchOffset < LastOffset ->
-                % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
-                Timestamp = 1723657274686,
-                _FormattedTimestamp = calendar:system_time_to_rfc3339(
-                    Timestamp, [{unit, millisecond}, {offset, "Z"}]
-                ),
-
-                BaseOffset = FirstOffset,
-                LastOffsetDelta = LastOffset - BaseOffset - 1,
-                Records = [
-                    % All records in one batch.
-                    make_record(BaseOffset, OffsetDelta)
-                 || OffsetDelta <- lists:seq(0, LastOffsetDelta)
-                ],
-                RecordBatches = [make_record_batch(BaseOffset, Timestamp, Records)],
-                make_partition_data(PartitionIndex, FirstOffset, LastOffset, RecordBatches);
+                make_single_produce(PartitionIndex, FirstOffset, LastOffset, FetchOffset);
             (
                 _Topic,
                 _FetchPartition = #{partition := PartitionIndex, fetch_offset := FetchOffset},
@@ -439,21 +475,33 @@ mock_single_produce(_Broker, MessageCount) ->
     ),
     ok.
 
+make_single_produce(PartitionIndex, FirstOffset, LastOffset, _FetchOffset) ->
+    % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
+    Timestamp = 1723657274686,
+    _FormattedTimestamp = calendar:system_time_to_rfc3339(
+        Timestamp, [{unit, millisecond}, {offset, "Z"}]
+    ),
+
+    BaseOffset = FirstOffset,
+    LastOffsetDelta = LastOffset - BaseOffset - 1,
+    Records = [
+        % All records in one batch.
+        make_record(BaseOffset, OffsetDelta)
+     || OffsetDelta <- lists:seq(0, LastOffsetDelta)
+    ],
+    RecordBatches = [make_record_batch(BaseOffset, Timestamp, Records)],
+    make_partition_data(PartitionIndex, FirstOffset, LastOffset, RecordBatches).
+
 make_record(BaseOffset, OffsetDelta) ->
     Offset = BaseOffset + OffsetDelta,
-    Key = iolist_to_binary(io_lib:format("key~B", [Offset])),
-    Value = iolist_to_binary(io_lib:format("value~B", [Offset])),
-    Headers = [],
-    #{
-        attributes => 0,
-        key => Key,
-        value => Value,
-        headers => Headers,
-        offset_delta => OffsetDelta,
-        timestamp_delta => 0
-    }.
+    Message = #{
+        key => iolist_to_binary(io_lib:format("key~B", [Offset])),
+        value => iolist_to_binary(io_lib:format("value~B", [Offset])),
+        headers => []
+    },
+    kamock_partition_data_builder:make_record(OffsetDelta, Message).
 
-parallel_callback(Ref, TopicOptions) ->
+parallel_callback(Ref, TopicOptions, Metadata) ->
     Options = kafine_parallel_subscription_callback:validate_options(
         #{
             topic_options => TopicOptions,
@@ -465,9 +513,24 @@ parallel_callback(Ref, TopicOptions) ->
 
     #{
         id => kafine_parallel_subscription,
-        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options]},
+        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options, Metadata]},
         restart => permanent,
         shutdown => 5000,
         type => supervisor,
         modules => [kafine_parallel_subscription_impl]
     }.
+
+has_message_count(ExpectedCount) ->
+    fun(PartitionData) ->
+        kafine_partition_data:message_count(PartitionData) == ExpectedCount
+    end.
+
+contains_message_matching(ExpectedMessage) ->
+    fun(PartitionData) ->
+        {Records, _} = kafine_partition_data:flatten(PartitionData),
+        % It's not an exact match, 'cos we don't care about (e.g.) the timestamp.
+        Pred = fun(R) ->
+            maps:intersect(R, ExpectedMessage) == ExpectedMessage
+        end,
+        {value, _} = lists:search(Pred, Records)
+    end.

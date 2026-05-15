@@ -2,7 +2,7 @@
 
 -behaviour(supervisor).
 
--export([start_link/4]).
+-export([start_link/3]).
 
 -export([
     start_child/4,
@@ -20,16 +20,15 @@ via(Ref) ->
 -spec start_link(
     Ref :: kafine:consumer_ref(),
     ConnectionOptions :: kafine:connection_options(),
-    ConsumerOptions :: kafine:consumer_options(),
-    TopicOptions :: #{kafine:topic() => kafine:topic_options()}
+    ConsumerOptions :: kafine:consumer_options()
 ) ->
     supervisor:startlink_ret().
 
-start_link(Ref, ConnectionOptions, ConsumerOptions, TopicOptions) ->
+start_link(Ref, ConnectionOptions, ConsumerOptions) ->
     supervisor:start_link(
         via(Ref),
         ?MODULE,
-        [Ref, ConnectionOptions, ConsumerOptions, TopicOptions]
+        [Ref, ConnectionOptions, ConsumerOptions]
     ).
 
 -spec start_child(
@@ -63,7 +62,7 @@ list_children(Ref) ->
         end,
     [Pid || {_Id, Pid, _Type, _Modules} <- Children, is_pid(Pid)].
 
-init([Ref, ConnectionOptions, ConsumerOptions, TopicOptions]) ->
+init([Ref, ConnectionOptions, ConsumerOptions]) ->
     kafine_proc_lib:set_label({?MODULE, Ref}),
     SupFlags = #{strategy => simple_one_for_one, intensity => 1, period => 5},
     ChildSpecs = [
@@ -73,7 +72,7 @@ init([Ref, ConnectionOptions, ConsumerOptions, TopicOptions]) ->
             % above.
             start =>
                 {kafine_node_fetcher, start_link, [
-                    Ref, ConnectionOptions, ConsumerOptions, TopicOptions
+                    Ref, ConnectionOptions, ConsumerOptions
                 ]},
             restart => transient,
             shutdown => 5000,

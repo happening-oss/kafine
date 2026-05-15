@@ -9,6 +9,7 @@
     topics/1,
     count/1,
     member/3,
+    reduce_while/3,
     any/2,
     all/2,
     fold/3,
@@ -82,6 +83,35 @@ member(Topic, Partition, TopicPartitions) ->
     case maps:get(Topic, TopicPartitions, undefined) of
         undefined -> false;
         Partitions -> lists:member(Partition, Partitions)
+    end.
+
+-spec reduce_while(
+    Fun :: fun(
+        (Topic :: kafine:topic(), Partition :: kafine:partition(), Acc :: AccType) ->
+            {cont, AccType} | {halt, AccType}
+    ),
+    Acc0 :: AccType,
+    TopicPartitions :: t()
+) -> {cont, AccType} | {halt, AccType} when
+    AccType :: dynamic().
+
+reduce_while(Fun, Acc0, TopicPartitions) ->
+    reduce_topics_while_(Fun, Acc0, maps:next(maps:iterator(TopicPartitions))).
+
+reduce_topics_while_(_Fun, Acc, none) ->
+    {cont, Acc};
+reduce_topics_while_(Fun, Acc, {Topic, Partitions, Iterator}) ->
+    case reduce_partitions_while_(Fun, Acc, Topic, Partitions) of
+        {cont, NewAcc} -> reduce_topics_while_(Fun, NewAcc, maps:next(Iterator));
+        {halt, NewAcc} -> {halt, NewAcc}
+    end.
+
+reduce_partitions_while_(_Fun, Acc, _, []) ->
+    {cont, Acc};
+reduce_partitions_while_(Fun, Acc, Topic, [Partition | Rest]) ->
+    case Fun(Topic, Partition, Acc) of
+        {cont, NewAcc} -> reduce_partitions_while_(Fun, NewAcc, Topic, Rest);
+        {halt, NewAcc} -> {halt, NewAcc}
     end.
 
 -spec any(

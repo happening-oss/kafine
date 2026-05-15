@@ -4,7 +4,7 @@
 -behaviour(kafine_resumer).
 
 -export([
-    start_link/2,
+    start_link/3,
     stop/1,
     whereis/1,
     info/1
@@ -16,7 +16,11 @@
     handle_info/2,
     terminate/2
 ]).
--export([resume/4]).
+-export([
+    set_next_offset/4,
+    resume/4
+]).
+
 -export([set_restart_offset/3]).
 -export([
     subscribe_partitions/2,
@@ -46,12 +50,13 @@ whereis(Ref) ->
     kafine_via:whereis_name(id(Ref)).
 
 -spec start_link(
-    Ref :: kafine:consumer_ref(), Options :: kafine_parallel_subscription_callback:options()
-) ->
-    gen_server:start_ret().
+    Ref :: kafine:consumer_ref(),
+    Options :: kafine_parallel_subscription_callback:options(),
+    Metadata :: telemetry:event_metadata()
+) -> gen_server:start_ret().
 
-start_link(Ref, Options) ->
-    gen_server:start_link(via(Ref), ?MODULE, [Ref, Options], start_options()).
+start_link(Ref, Options, Metadata) ->
+    gen_server:start_link(via(Ref), ?MODULE, [Ref, Options, Metadata], start_options()).
 
 start_options() ->
     [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
@@ -96,6 +101,9 @@ cast(Pid, Msg) when is_pid(Pid) ->
 cast(Ref, Msg) ->
     gen_server:cast(via(Ref), Msg).
 
+set_next_offset(Ref, Topic, Partition, Offset) ->
+    kafine_parallel_handler:set_next_offset(Ref, Topic, Partition, Offset).
+
 resume(Ref, Topic, Partition, Offset) ->
     kafine_parallel_handler:resume(Ref, Topic, Partition, Offset).
 
@@ -120,7 +128,8 @@ set_restart_offset(RefOrPid, TopicPartition, Offset) ->
     topic_partition_handlers = #{} :: #{pid() => topic_partition()},
     restarts = [] :: [{topic_partition(), non_neg_integer()}],
     restart_offsets = #{} :: #{topic_partition() => kafine:offset()},
-    req_ids = kafine_coordinator:reqids_new() :: kafine_coordinator:req_ids()
+    req_ids = kafine_coordinator:reqids_new() :: kafine_coordinator:req_ids(),
+    metadata :: telemetry:event_metadata()
 }).
 
 init([
@@ -132,11 +141,12 @@ init([
         offset_callback := OffsetCallback,
         skip_empty_fetches := SkipEmptyFetches,
         error_mode := ErrorMode
-    }
+    },
+    Metadata
 ]) ->
     process_flag(trap_exit, true),
-    Metadata = #{ref => Ref},
-    logger:set_process_metadata(Metadata),
+    Metadata2 = maps:merge(#{ref => Ref}, Metadata),
+    logger:set_process_metadata(Metadata2),
     kafine_proc_lib:set_label({?MODULE, Ref}),
     ok = kafine_resumer:register(Ref, ?MODULE),
 
@@ -156,7 +166,8 @@ init([
                 callback_arg = CallbackArg,
                 offset_callback = OffsetCallback,
                 skip_empty_fetches = SkipEmptyFetches,
-                error_mode = ErrorMode
+                error_mode = ErrorMode,
+                metadata = Metadata2
             }}
     end.
 
@@ -294,7 +305,8 @@ get_offset_and_start(
         error_mode = ErrorMode,
         topic_partition_handlers = Handlers,
         restart_offsets = RestartOffsets,
-        req_ids = ReqIds
+        req_ids = ReqIds,
+        metadata = Metadata
     }
 ) ->
     HaveOffsetFetcher = kafine_coordinator:exists(Ref),
@@ -316,7 +328,7 @@ get_offset_and_start(
                             error_mode => ErrorMode
                         },
                         {ok, Pid} = kafine_parallel_handler:start_link(
-                            Ref, {Topic, Partition}, Offset, Opts
+                            Ref, {Topic, Partition}, Offset, Opts, Metadata
                         ),
                         {[{Pid, {Topic, Partition}} | NewHandlers], NeedFetch};
                     fetch ->
@@ -378,7 +390,8 @@ handle_offsets(
         skip_empty_fetches = SkipEmptyFetches,
         error_mode = ErrorMode,
         offset_callback = OffsetCallback,
-        topic_partition_handlers = Handlers
+        topic_partition_handlers = Handlers,
+        metadata = Metadata
     }
 ) ->
     % TODO: Do we need to handle missing offsets being in requests but not responses?
@@ -400,7 +413,7 @@ handle_offsets(
                 error_mode => ErrorMode
             },
             {ok, Pid} = kafine_parallel_handler:start_link(
-                Ref, TopicPartition, Offset1, Opts
+                Ref, TopicPartition, Offset1, Opts, Metadata
             ),
             maps:put(Pid, TopicPartition, HandlersAcc)
         end,

@@ -13,6 +13,7 @@
 -define(CONSUMER_REF, {?MODULE, ?FUNCTION_NAME}).
 -define(CALLBACK_ARGS, undefined).
 -define(CALLBACK_STATE, {state, ?MODULE}).
+-define(FETCHER_METADATA, #{}).
 -define(WAIT_TIMEOUT_MS, 2_000).
 
 all_test_() ->
@@ -27,11 +28,9 @@ all_test_() ->
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
 
     meck:new(kafine_parallel_handler, [passthrough]),
 
@@ -55,7 +54,8 @@ empty_response_leaves_offset_unchanged() ->
             callback_arg => ?CALLBACK_ARGS,
             skip_empty_fetches => false,
             error_mode => reset
-        }
+        },
+        ?FETCHER_METADATA
     ),
 
     FetchInfo = #{
@@ -90,17 +90,20 @@ empty_response_leaves_offset_unchanged() ->
         session_id => 0
     },
 
-    ok = kafine_fetch:handle_response(
-        EmptyFetchResponse,
-        FetchInfo,
-        1,
-        101,
-        #{},
-        self()
+    {ok, Result} = kafine_fetch:handle_response(EmptyFetchResponse, FetchInfo),
+
+    % Should complete job
+    ?assertEqual(
+        #{
+            TopicName => #{
+                ?PARTITION => completed
+            }
+        },
+        Result
     ),
 
-    % Wait for parallel handler call
-    ?assertWait(
+    % Validate for parallel handler call
+    ?assertCalled(
         kafine_parallel_handler,
         handle_partition_data,
         [
@@ -109,25 +112,7 @@ empty_response_leaves_offset_unchanged() ->
             PartitionData,
             0,
             '_'
-        ],
-        ?WAIT_TIMEOUT_MS
-    ),
-
-    % Should complete job
-    ?assertWait(
-        kafine_fetcher,
-        complete_job,
-        [
-            '_',
-            1,
-            101,
-            #{
-                TopicName => #{
-                    ?PARTITION => completed
-                }
-            }
-        ],
-        ?WAIT_TIMEOUT_MS
+        ]
     ),
 
     % Should re-request the same offset
@@ -162,7 +147,8 @@ unwanted_records_are_dropped() ->
             callback_arg => ?CALLBACK_ARGS,
             skip_empty_fetches => false,
             error_mode => reset
-        }
+        },
+        ?FETCHER_METADATA
     ),
 
     % Unix epoch, milliseconds; 2024-08-14T17:41:14.686Z
@@ -205,30 +191,15 @@ unwanted_records_are_dropped() ->
         }
     },
 
-    ok = kafine_fetch:handle_response(
-        FetchResponse,
-        FetchInfo,
-        1,
-        101,
-        #{},
-        self()
-    ),
+    {ok, Result} = kafine_fetch:handle_response(FetchResponse, FetchInfo),
 
-    % Should complete job
-    ?assertWait(
-        kafine_fetcher,
-        complete_job,
-        [
-            '_',
-            1,
-            101,
-            #{
-                TopicName => #{
-                    ?PARTITION => completed
-                }
+    ?assertEqual(
+        #{
+            TopicName => #{
+                ?PARTITION => completed
             }
-        ],
-        ?WAIT_TIMEOUT_MS
+        },
+        Result
     ),
 
     % Wait until next fetch is called.
@@ -241,15 +212,11 @@ unwanted_records_are_dropped() ->
         ?WAIT_TIMEOUT_MS
     ),
 
+    % TODO: not sure this test adds anything now that the skipping is in handle_partition_data
     ?assertMatch(
         [
             {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
-            {_, {_, begin_record_batch, [TopicName, ?PARTITION, 43, _, _]}, {ok, _}},
-            % 41 and 42 should be dropped; we should see 43 and 44.
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key43">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key44">>}, _]}, {ok, _}},
-            % end_record_batch should see the offset of the _next_ record, i.e. 45.
-            {_, {_, end_record_batch, [TopicName, ?PARTITION, 45, _, _]}, {ok, _}}
+            {_, {_, handle_partition_data, [TopicName, ?PARTITION, _, _]}, {ok, _}}
         ],
         meck:history(test_consumer_callback)
     ),
@@ -273,7 +240,8 @@ unwanted_records_are_dropped_2() ->
             callback_arg => ?CALLBACK_ARGS,
             skip_empty_fetches => false,
             error_mode => reset
-        }
+        },
+        ?FETCHER_METADATA
     ),
 
     RecordBatches = [
@@ -300,30 +268,15 @@ unwanted_records_are_dropped_2() ->
         }
     },
 
-    ok = kafine_fetch:handle_response(
-        FetchResponse,
-        FetchInfo,
-        1,
-        101,
-        #{},
-        self()
-    ),
+    {ok, Result} = kafine_fetch:handle_response(FetchResponse, FetchInfo),
 
-    % Should complete job
-    ?assertWait(
-        kafine_fetcher,
-        complete_job,
-        [
-            '_',
-            1,
-            101,
-            #{
-                TopicName => #{
-                    ?PARTITION => completed
-                }
+    ?assertEqual(
+        #{
+            TopicName => #{
+                ?PARTITION => completed
             }
-        ],
-        ?WAIT_TIMEOUT_MS
+        },
+        Result
     ),
 
     % Wait until next fetch is called.
@@ -336,14 +289,11 @@ unwanted_records_are_dropped_2() ->
         ?WAIT_TIMEOUT_MS
     ),
 
+    % TODO: not sure this test adds anything now that the skipping is in handle_partition_data
     ?assertMatch(
         [
             {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
-            {_, {_, begin_record_batch, [TopicName, ?PARTITION, 55, _, _]}, {ok, _}},
-            % 51, 52, 53, 54 should be dropped; we should start at 55.
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key55">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key56">>}, _]}, {ok, _}},
-            {_, {_, end_record_batch, [TopicName, ?PARTITION, 57, _, _]}, {ok, _}}
+            {_, {_, handle_partition_data, [TopicName, ?PARTITION, _, _]}, {ok, _}}
         ],
         meck:history(test_consumer_callback)
     ),
@@ -362,7 +312,8 @@ skipping_empty_fetches_result_in_repeat_and_no_callback() ->
             callback_arg => ?CALLBACK_ARGS,
             skip_empty_fetches => true,
             error_mode => reset
-        }
+        },
+        ?FETCHER_METADATA
     ),
     meck:reset(kafine_fetcher),
 
@@ -398,17 +349,19 @@ skipping_empty_fetches_result_in_repeat_and_no_callback() ->
         session_id => 0
     },
 
-    ok = kafine_fetch:handle_response(
-        EmptyFetchResponse,
-        FetchInfo,
-        1,
-        101,
-        #{},
-        self()
+    {ok, Result} = kafine_fetch:handle_response(EmptyFetchResponse, FetchInfo),
+
+    ?assertEqual(
+        #{
+            TopicName => #{
+                ?PARTITION => repeat
+            }
+        },
+        Result
     ),
 
-    % Wait for parallel handler call
-    ?assertWait(
+    % Verify for parallel handler call
+    ?assertCalled(
         kafine_parallel_handler,
         handle_partition_data,
         [
@@ -417,25 +370,7 @@ skipping_empty_fetches_result_in_repeat_and_no_callback() ->
             PartitionData,
             0,
             '_'
-        ],
-        ?WAIT_TIMEOUT_MS
-    ),
-
-    % Should complete job with repeat
-    ?assertWait(
-        kafine_fetcher,
-        complete_job,
-        [
-            '_',
-            1,
-            101,
-            #{
-                TopicName => #{
-                    ?PARTITION => repeat
-                }
-            }
-        ],
-        ?WAIT_TIMEOUT_MS
+        ]
     ),
 
     ?assertMatch(
@@ -470,7 +405,8 @@ skipping_empty_after_first_enables_skipping_after_first_response() ->
             callback_arg => ?CALLBACK_ARGS,
             skip_empty_fetches => after_first,
             error_mode => reset
-        }
+        },
+        ?FETCHER_METADATA
     ),
 
     ?assertWait(
@@ -522,30 +458,15 @@ skipping_empty_after_first_enables_skipping_after_first_response() ->
         }
     },
 
-    ok = kafine_fetch:handle_response(
-        FetchResponse,
-        FetchInfo,
-        1,
-        101,
-        #{},
-        self()
-    ),
+    {ok, Result} = kafine_fetch:handle_response(FetchResponse, FetchInfo),
 
-    % Should complete job
-    ?assertWait(
-        kafine_fetcher,
-        complete_job,
-        [
-            '_',
-            1,
-            101,
-            #{
-                TopicName => #{
-                    ?PARTITION => completed
-                }
+    ?assertEqual(
+        #{
+            TopicName => #{
+                ?PARTITION => completed
             }
-        ],
-        ?WAIT_TIMEOUT_MS
+        },
+        Result
     ),
 
     % Wait until next fetch is called. SkipEmpty should be true
@@ -561,12 +482,7 @@ skipping_empty_after_first_enables_skipping_after_first_response() ->
     ?assertMatch(
         [
             {_, {_, init, [TopicName, ?PARTITION, ?CALLBACK_ARGS]}, {ok, ?CALLBACK_STATE}},
-            {_, {_, begin_record_batch, [TopicName, ?PARTITION, 43, _, _]}, {ok, _}},
-            % 41 and 42 should be dropped; we should see 43 and 44.
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key43">>}, _]}, {ok, _}},
-            {_, {_, handle_record, [TopicName, ?PARTITION, #{key := <<"key44">>}, _]}, {ok, _}},
-            % end_record_batch should see the offset of the _next_ record, i.e. 45.
-            {_, {_, end_record_batch, [TopicName, ?PARTITION, 45, _, _]}, {ok, _}}
+            {_, {_, handle_partition_data, [TopicName, ?PARTITION, _, _]}, {ok, _}}
         ],
         meck:history(test_consumer_callback)
     ),
@@ -574,46 +490,21 @@ skipping_empty_after_first_enables_skipping_after_first_response() ->
     ok.
 
 make_partition_data(PartitionIndex, RecordBatches, LastOffset) ->
-    #{
-        partition_index => PartitionIndex,
-        error_code => ?NONE,
-        records => RecordBatches,
-        high_watermark => LastOffset,
-        last_stable_offset => LastOffset,
-        log_start_offset => 0,
-        aborted_transactions => [],
-        preferred_read_replica => -1
-    }.
+    kamock_partition_data_builder:make_partition_data(PartitionIndex, 0, LastOffset, RecordBatches).
 
 make_record_batch(BaseOffset, LastOffsetDelta, Timestamp, Records) ->
-    #{
-        base_offset => BaseOffset,
-        partition_leader_epoch => 0,
-        magic => 2,
-        crc => -1,
-        attributes => #{compression => none},
-        last_offset_delta => LastOffsetDelta,
-        base_timestamp => Timestamp,
-        max_timestamp => Timestamp,
-        producer_id => -1,
-        producer_epoch => -1,
-        base_sequence => -1,
-        records => Records
-    }.
+    kamock_partition_data_builder:make_record_batch(
+        BaseOffset, LastOffsetDelta, Timestamp, Records
+    ).
 
 make_record(BaseOffset, OffsetDelta) ->
     Offset = BaseOffset + OffsetDelta,
-    Key = iolist_to_binary(io_lib:format("key~B", [Offset])),
-    Value = iolist_to_binary(io_lib:format("value~B", [Offset])),
-    Headers = [],
-    #{
-        attributes => 0,
-        key => Key,
-        value => Value,
-        headers => Headers,
-        offset_delta => OffsetDelta,
-        timestamp_delta => 0
-    }.
+    Message = #{
+        key => iolist_to_binary(io_lib:format("key~B", [Offset])),
+        value => iolist_to_binary(io_lib:format("value~B", [Offset])),
+        headers => []
+    },
+    kamock_partition_data_builder:make_record(OffsetDelta, Message).
 
 make_record_batch(BeginOffset, EndOffset) ->
     % BeginOffset is inclusive, EndOffset is exclusive.

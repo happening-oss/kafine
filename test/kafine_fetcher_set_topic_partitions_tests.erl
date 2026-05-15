@@ -46,7 +46,9 @@ subscribe_twice() ->
     % All of the partitions are on a single node. Subscribe to two different topics; we should reuse node consumers.
     ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => [0]}),
     fetch(?CONSUMER_REF, ?TOPIC_NAME, 0, 0),
-    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]}),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{
+        ?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]
+    }),
     fetch(?CONSUMER_REF, ?TOPIC_NAME_2, 0, 0),
 
     meck:wait(2, test_fetcher_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS),
@@ -74,7 +76,9 @@ subscribe_multiple() ->
     ),
 
     % All of the partitions are on a single node. Subscribe to two different topics; we should reuse node consumers.
-    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]}),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{
+        ?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]
+    }),
     fetch(?CONSUMER_REF, ?TOPIC_NAME, 0, 0),
     fetch(?CONSUMER_REF, ?TOPIC_NAME_2, 0, 0),
 
@@ -102,7 +106,9 @@ unsubscribe() ->
     ),
 
     % All of the partitions are on a single node. Subscribe to two different topics; we should reuse node consumers.
-    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]}),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{
+        ?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]
+    }),
     fetch(?CONSUMER_REF, ?TOPIC_NAME, 0, 0),
     fetch(?CONSUMER_REF, ?TOPIC_NAME_2, 0, 0),
 
@@ -133,7 +139,9 @@ unsubscribe_partial() ->
     ),
 
     % All of the partitions are on a single node. Subscribe to two different topics; we should reuse node consumers.
-    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]}),
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{
+        ?TOPIC_NAME => [0], ?TOPIC_NAME_2 => [0]
+    }),
     fetch(?CONSUMER_REF, ?TOPIC_NAME, 0, 0),
     fetch(?CONSUMER_REF, ?TOPIC_NAME_2, 0, 0),
 

@@ -42,18 +42,12 @@ setup() ->
     % We'll forward to the range assignor, but we want to make sure that we actually pay attention to the configuration.
     meck:new(test_assignor, [non_strict]),
     meck:expect(test_assignor, name, fun() -> <<"test">> end),
-    meck:expect(test_assignor, metadata, fun(Topics) -> kafine_range_assignor:metadata(Topics) end),
-    meck:expect(test_assignor, assign, fun(Members, TopicPartitions, AssignmentUserData) ->
-        kafine_range_assignor:assign(Members, TopicPartitions, AssignmentUserData)
-    end),
+    meck:expect(test_assignor, assign, fun kafine_range_assignor:assign/3),
 
     % One of the tests requires multiple assignors; we provide a second one here.
     meck:new(test_assignor2, [non_strict]),
     meck:expect(test_assignor2, name, fun() -> <<"test2">> end),
-    meck:expect(test_assignor2, metadata, fun(Topics) -> kafine_range_assignor:metadata(Topics) end),
-    meck:expect(test_assignor2, assign, fun(Members, TopicPartitions, AssignmentUserData) ->
-        kafine_range_assignor:assign(Members, TopicPartitions, AssignmentUserData)
-    end),
+    meck:expect(test_assignor2, assign, fun kafine_range_assignor:assign/3),
 
     meck:new(kafine_range_assignor, [passthrough]),
 
@@ -308,7 +302,7 @@ leader_with_new_member() ->
     end,
 
     #{member_id := MemberId} =
-        meck:capture(last, kamock_join_group, handle_join_group_request, '_', 1),
+        meck:capture(last, kamock_join_group, handle_join_group_request, ['_', '_'], 1),
 
     % Clear history; we'll check it later.
     meck:reset(kamock_join_group),
@@ -396,7 +390,7 @@ follower_with_new_member() ->
     end,
 
     #{member_id := MemberId} =
-        meck:capture(last, kamock_join_group, handle_join_group_request, '_', 1),
+        meck:capture(last, kamock_join_group, handle_join_group_request, ['_', '_'], 1),
 
     % Clear history; we'll check it later.
     meck:reset(kamock_join_group),
@@ -549,7 +543,9 @@ offset_commit() ->
         ?REBALANCE_REF, GroupId, [TopicName], #{}, MembershipOptions
     ),
 
-    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, [TopicName], GroupId, MembershipOptions),
+    {ok, R} = kafine_eager_rebalance:start_link(
+        ?REBALANCE_REF, [TopicName], GroupId, MembershipOptions
+    ),
     % wait until rebalance has completed
     receive
         {[kafine, rebalance, leader], TelemetryRef, #{}, #{group_id := GroupId}} -> ok
@@ -627,7 +623,9 @@ multiple_assignors() ->
         ?REBALANCE_REF, GroupId, [TopicName], #{}, MembershipOptions
     ),
 
-    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF, [TopicName], GroupId, MembershipOptions),
+    {ok, R} = kafine_eager_rebalance:start_link(
+        ?REBALANCE_REF, [TopicName], GroupId, MembershipOptions
+    ),
 
     % Wait for the rebalance to complete.
     (fun() ->

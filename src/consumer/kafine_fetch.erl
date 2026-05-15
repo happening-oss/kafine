@@ -2,7 +2,11 @@
 
 -export([
     build_request/2,
-    handle_response/6
+    handle_response/2
+]).
+
+-export_type([
+    partition_result/0
 ]).
 
 -include_lib("kernel/include/logger.hrl").
@@ -68,14 +72,15 @@ build_fetch_topics(FetchInfo, #{partition_max_bytes := PartitionMaxBytes}) ->
         FetchInfo
     ).
 
+-type partition_result() ::
+    completed
+    | repeat
+    | {error, term()}.
+
 -spec handle_response(
     FetchResponse :: fetch_response:fetch_response_11(),
-    FetchInfo :: kafine_topic_partition_data:t({kafine:offset(), module(), any()}),
-    JobId :: kafine_fetcher:job_id(),
-    NodeId :: kafine:node_id(),
-    TopicOptions :: #{kafine:topic() => kafine:topic_options()},
-    Owner :: pid()
-) -> ok.
+    FetchInfo :: kafine_topic_partition_data:t({kafine:offset(), module(), any()})
+) -> {ok, kafine_topic_partition_data:t(partition_result())} | {error, {kafka_error, integer()}}.
 
 handle_response(
     #{
@@ -84,23 +89,25 @@ handle_response(
         throttle_time_ms := _,
         session_id := _
     },
-    FetchInfo,
-    JobId,
-    NodeId,
-    TopicOptions,
-    Owner
+    FetchInfo
 ) ->
-    Result = kafine_topic_partition_lists:to_topic_partition_data(
-        topic,
-        fun(Topic, PartitionData = #{partition_index := Partition}) ->
-            case handle_partition_response(Topic, PartitionData, FetchInfo, TopicOptions) of
-                {error, _} -> false;
-                Result -> {Partition, Result}
-            end
-        end,
-        Responses
-    ),
-    kafine_fetcher:complete_job(Owner, JobId, NodeId, Result).
+    Result =
+        kafine_topic_partition_lists:to_topic_partition_data(
+            topic,
+            fun(Topic, PartitionData = #{partition_index := Partition}) ->
+                case handle_partition_response(Topic, PartitionData, FetchInfo) of
+                    {error, not_requested} -> false;
+                    Result -> {Partition, Result}
+                end
+            end,
+            Responses
+        ),
+    {ok, Result};
+handle_response(
+    #{error_code := ErrorCode},
+    _FetchInfo
+) ->
+    {error, {kafka_error, ErrorCode}}.
 
 handle_partition_response(
     Topic,
@@ -114,8 +121,7 @@ handle_partition_response(
         aborted_transactions := _,
         preferred_read_replica := _
     },
-    FetchInfo,
-    _TopicOptions
+    FetchInfo
 ) ->
     case kafine_topic_partition_data:get(Topic, Partition, FetchInfo, undefined) of
         {FetchOffset, CallbackMod, CallbackArgs} ->
@@ -127,20 +133,11 @@ handle_partition_response(
             {error, not_requested}
     end;
 handle_partition_response(
-    Topic,
-    #{error_code := ?OFFSET_OUT_OF_RANGE},
-    _FetchInfo,
-    TopicOptions
-) ->
-    #{offset_reset_policy := OffsetResetPolicy} = maps:get(Topic, TopicOptions),
-    {update_offset, OffsetResetPolicy};
-handle_partition_response(
     _Topic,
-    #{error_code := ?NOT_LEADER_OR_FOLLOWER},
-    _FetchInfo,
-    _TopicOptions
+    #{error_code := ErrorCode},
+    _FetchInfo
 ) ->
-    give_away.
+    {error, {kafka_error, ErrorCode}}.
 
 invoke_callback(
     CallbackMod, CallbackArgs, Topic, PartitionData = #{partition_index := Partition}, FetchOffset

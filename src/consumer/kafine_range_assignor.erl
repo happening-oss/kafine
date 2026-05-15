@@ -1,13 +1,12 @@
 -module(kafine_range_assignor).
 -behaviour(kafine_assignor).
 
-%%% Simplified implementation of Java's RangeAssignor.
-%%% - NOT rack-aware.
-%%% - does NOT use group instance ID.
+% Simplified implementation of Java's RangeAssignor.
+% - NOT rack-aware.
+% - does NOT use group instance ID.
 
 -export([
     name/0,
-    metadata/1,
     assign/3
 ]).
 
@@ -17,21 +16,10 @@
 
 name() -> <<"range">>.
 
--spec metadata(Topics :: [kafine:topic()]) -> kafine_assignor:metadata().
-
-%% Topics is the list of topics that we want to subscribe to.
-%% UserData is currently unused.
-%% We assume version 0 of the consumer subscription.
-%% Later versions allow us to specify what we already own, a rack ID, etc.
-metadata(Topics) ->
-    #{
-        topics => Topics, user_data => <<>>
-    }.
-
 -spec assign(
     Members :: [kafine_assignor:member()],
-    TopicPartitions :: kafine_topic_partitions:t(),
-    AssignmentUserData :: binary()
+    ClusterMetadata :: kafine_cluster_metadata:t(),
+    AssignmentUserData :: kafine_assignor:user_data()
 ) -> kafine_assignor:assignments().
 
 %% Given a list of members and topics/partitions, assign the partitions to the members.
@@ -40,9 +28,10 @@ metadata(Topics) ->
 %% each topic should go to a single (possibly different) member.
 %% C1 :: (TA, P0), (TB, P0), (TA, P1), (TB, P1)
 %% C2 :: (TA, P2), (TB, P2)
-assign(Members0, TopicPartitions, _AssignmentUserData) ->
+assign(Members0, ClusterMetadata, _AssignmentUserData) ->
     % Members are sorted before we start.
     Members = lists:sort(Members0),
+    TopicPartitions = kafine_assignor:get_topic_partitions(Members, ClusterMetadata),
     Empty = create_empty_assignments(Members),
     do_assign(Members, TopicPartitions, Empty).
 
@@ -68,6 +57,7 @@ create_initial_assignments(Members, Initial) ->
         #{},
         Members
     ).
+
 %% For each topic, share the partitions between the members.
 do_assign(Members0, TopicPartitions, Acc0) ->
     maps:fold(
@@ -87,7 +77,7 @@ do_assign(Members0, TopicPartitions, Acc0) ->
         TopicPartitions
     ).
 
-assign_to(Topic, [{_Member = #{member_id := MemberId}, Share} | Rest], Acc) ->
+assign_to(Topic, [{_Member = #{member_id := MemberId}, Share = [_ | _]} | Rest], Acc) ->
     Acc2 = maps:update_with(
         MemberId,
         fun(MemberAssignment = #{assigned_partitions := AssignedPartitions}) ->
@@ -96,6 +86,8 @@ assign_to(Topic, [{_Member = #{member_id := MemberId}, Share} | Rest], Acc) ->
         Acc
     ),
     assign_to(Topic, Rest, Acc2);
+assign_to(_Topic, [_ | _], Acc) ->
+    Acc;
 assign_to(_Topic, [], Acc) ->
     Acc.
 
@@ -111,7 +103,9 @@ share(List, N) when is_list(List), N > 0 ->
     % How many left over?
     R = L rem N,
 
-    lists:reverse(share(List, N, D, R, [])).
+    lists:reverse(share(List, N, D, R, []));
+share(_List, _N = 0) ->
+    [].
 
 share([], _N = 0, _D, _R, Acc) ->
     Acc;

@@ -3,12 +3,15 @@
 -behaviour(gen_server).
 
 -export([
-    start_link/4,
+    start_link/5,
     stop/2,
     info/1
 ]).
 
--export([resume/4]).
+-export([
+    resume/4,
+    set_next_offset/4
+]).
 
 -export([
     init/1,
@@ -37,11 +40,11 @@ via(Ref, TopicPartition) ->
     error_mode := reset | retry | skip
 }.
 
-start_link(Ref, TopicPartition, Offset, Opts) ->
+start_link(Ref, TopicPartition, Offset, Opts, Metadata) ->
     gen_server:start_link(
         via(Ref, TopicPartition),
         ?MODULE,
-        [Ref, TopicPartition, Offset, Opts],
+        [Ref, TopicPartition, Offset, Opts, Metadata],
         start_options()
     ).
 
@@ -74,7 +77,9 @@ stop(Pid, Reason) ->
 info(Pid) when is_pid(Pid) ->
     gen_server:call(Pid, info).
 
-handle_partition_data({_Pid, true}, _Topic, _PartitionData = #{records := []}, _FetchOffset, _Span) ->
+handle_partition_data(
+    {_Pid, _SkipEmpty = true}, _Topic, _PartitionData = #{records := []}, _FetchOffset, _Span
+) ->
     % Empty fetch, we're skipping those
     repeat;
 handle_partition_data({Pid, _}, Topic, PartitionData, FetchOffset, Span) ->
@@ -83,12 +88,16 @@ handle_partition_data({Pid, _}, Topic, PartitionData, FetchOffset, Span) ->
 resume(Ref, Topic, Partition, Offset) ->
     gen_server:cast(via(Ref, {Topic, Partition}), {resume, Offset}).
 
+set_next_offset(Ref, Topic, Partition, Offset) ->
+    gen_server:cast(via(Ref, {Topic, Partition}), {set_next_offset, Offset}).
+
 -record(state, {
     ref :: kafine:consumer_ref(),
     fetcher :: term(),
     topic :: kafine:topic(),
     partition :: kafine:partition(),
     opts :: opts(),
+    metadata :: telemetry:event_metadata(),
     callback_state :: term(),
     status :: active | paused,
     next_offset :: kafine:offset(),
@@ -104,10 +113,11 @@ init([
         callback_mod := CallbackMod,
         callback_arg := CallbackArg,
         skip_empty_fetches := SkipEmptyFetches
-    }
+    },
+    Metadata
 ]) ->
-    Metadata = #{ref => Ref, topic => Topic, partition => Partition},
-    logger:set_process_metadata(Metadata),
+    Metadata2 = maps:merge(#{ref => Ref, topic => Topic, partition => Partition}, Metadata),
+    logger:set_process_metadata(Metadata2),
     kafine_proc_lib:set_label({?MODULE, {Ref, Topic, Partition}}),
     FetcherPid =
         case kafine_fetcher:whereis(Ref) of
@@ -135,6 +145,7 @@ init([
                 false -> false
             end,
         opts = Opts,
+        metadata = Metadata2,
         callback_state = CallbackState,
         status = CallbackStatus
     },
@@ -195,7 +206,7 @@ handle_cast(
         fetch_span = Span
     }
 ) ->
-    NextOffset = kafine_fetch_response_partition_data:find_next_offset(PartitionData),
+    NextOffset = find_next_offset(PartitionData),
     Measurements0 = maps:with(
         [high_watermark, last_stable_offset, log_start_offset], PartitionData
     ),
@@ -232,6 +243,7 @@ handle_cast(
         Topic, PartitionData, FetchOffset, CallbackMod, CallbackState1
     ),
 
+    % SkipEmptyFetches :: boolean() | after_first.
     SkipEmpty =
         case SkipEmptyFetches of
             false -> false;
@@ -260,6 +272,17 @@ handle_cast(
             % Note that we only do this if we're not paused. Pause should use hibernate instead
             {noreply, State3, {continue, gc}}
     end;
+handle_cast(
+    {set_next_offset, NewNextOffset},
+    State = #state{ref = Ref, topic = Topic, partition = Partition}
+) ->
+    telemetry:execute(
+        [kafine, parallel_handler, resume],
+        #{next_offset => NewNextOffset},
+        #{ref => Ref, topic => Topic, partition => Partition}
+    ),
+    State2 = State#state{next_offset = NewNextOffset},
+    {noreply, State2};
 handle_cast(
     {resume, Offset},
     State = #state{ref = Ref, topic = Topic, partition = Partition, next_offset = NextOffset}
@@ -310,7 +333,8 @@ handle_status(
         topic = Topic,
         partition = Partition,
         next_offset = Offset,
-        skip_empty = SkipEmpty
+        skip_empty = SkipEmpty,
+        metadata = Metadata
     }
 ) ->
     ?LOG_DEBUG("Fetching ~s/~p at offset ~p", [Topic, Partition, Offset]),
@@ -320,7 +344,7 @@ handle_status(
     Span = kafine_telemetry:start_span(
         [kafine, parallel_handler, fetch],
         #{fetch_offset => Offset},
-        #{
+        Metadata#{
             ref => Ref,
             topic => Topic,
             partition => Partition,
@@ -346,3 +370,20 @@ handle_status(
         #{ref => Ref, topic => Topic, partition => Partition}
     ),
     State#state{status = paused}.
+
+find_next_offset(
+    #{records := []}
+) ->
+    % No records, no next offset
+    undefined;
+find_next_offset(
+    #{records := RecordBatches}
+) ->
+    lists:max(
+        lists:map(
+            fun(#{base_offset := BaseOffset, last_offset_delta := LastOffsetDelta}) ->
+                BaseOffset + LastOffsetDelta
+            end,
+            RecordBatches
+        )
+    ) + 1.

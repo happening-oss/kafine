@@ -17,6 +17,7 @@
     skip_empty_fetches => true,
     error_mode => reset
 }).
+-define(FETCHER_METADATA, #{}).
 
 -define(WAIT_TIMEOUT_MS, 2_000).
 
@@ -25,13 +26,9 @@
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, undefined} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
-
-    meck:new(kamock_offset_fetch_response_partition, [passthrough]),
 
     meck:new(kafine_fetcher),
     meck:expect(kafine_fetcher, whereis, fun(_) -> self() end),
@@ -63,18 +60,19 @@ restarts_exiting_partition_handler() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
-    % callback should crash on first end batch, after that behave normally
+    % callback should crash on first batch, after that behave normally
     meck:expect(
         test_consumer_callback,
-        end_record_batch,
-        5,
+        handle_partition_data,
+        4,
         meck:seq([
             meck:raise(exit, crash_it),
-            fun(_T, _P, _N, _Info, St) -> {ok, St} end
+            fun(_T, _P, _PD, St) -> {ok, St} end
         ])
     ),
 
@@ -86,7 +84,7 @@ restarts_exiting_partition_handler() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS, ?FETCHER_METADATA],
         ?WAIT_TIMEOUT_MS
     ),
     meck:reset(kafine_parallel_handler),
@@ -106,7 +104,7 @@ restarts_exiting_partition_handler() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS, '_'],
         ?WAIT_TIMEOUT_MS
     ).
 
@@ -120,18 +118,19 @@ restarts_from_newly_committed_offset() ->
                 callback_mod => ?CALLBACK_MOD,
                 callback_arg => ?CALLBACK_ARG
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
-    % callback should crash on first end batch, after that behave normally
+    % callback should crash on first batch, after that behave normally
     meck:expect(
         test_consumer_callback,
-        end_record_batch,
-        5,
+        handle_partition_data,
+        4,
         meck:seq([
             meck:raise(exit, crash_it),
-            fun(_T, _P, _N, _Info, St) -> {ok, St} end
+            fun(_T, _P, _PD, St) -> {ok, St} end
         ])
     ),
 
@@ -143,7 +142,7 @@ restarts_from_newly_committed_offset() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, ?HANDLER_OPTS, '_'],
         ?WAIT_TIMEOUT_MS
     ),
     meck:reset(kafine_parallel_handler),
@@ -166,7 +165,7 @@ restarts_from_newly_committed_offset() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, CommittedOffset, ?HANDLER_OPTS],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, CommittedOffset, ?HANDLER_OPTS, '_'],
         ?WAIT_TIMEOUT_MS
     ).
 
@@ -181,18 +180,19 @@ retry_fetch_after_crash() ->
                 callback_arg => ?CALLBACK_ARG,
                 error_mode => retry
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
-    % callback should crash on first end batch, after that behave normally
+    % callback should crash on first batch, after that behave normally
     meck:expect(
         test_consumer_callback,
-        end_record_batch,
-        5,
+        handle_partition_data,
+        4,
         meck:seq([
             meck:raise(exit, crash_it),
-            fun(_T, _P, _N, _Info, St) -> {ok, St} end
+            fun(_T, _PD, St) -> {ok, St} end
         ])
     ),
 
@@ -204,7 +204,7 @@ retry_fetch_after_crash() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, '_'],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, '_', '_'],
         ?WAIT_TIMEOUT_MS
     ),
     meck:reset(kafine_parallel_handler),
@@ -224,7 +224,7 @@ retry_fetch_after_crash() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, Offset, '_'],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, Offset, '_', '_'],
         ?WAIT_TIMEOUT_MS
     ).
 
@@ -239,18 +239,19 @@ skip_last_fetch_after_crash() ->
                 callback_arg => ?CALLBACK_ARG,
                 error_mode => skip
             }
-        )
+        ),
+        ?FETCHER_METADATA
     ),
     {ok, ?REF} = kafine_parallel_subscription_callback:init(?REF),
 
-    % callback should crash on first end batch, after that behave normally
+    % callback should crash on first batch, after that behave normally
     meck:expect(
         test_consumer_callback,
-        end_record_batch,
-        5,
+        handle_partition_data,
+        4,
         meck:seq([
             meck:raise(exit, crash_it),
-            fun(_T, _P, _N, _Info, St) -> {ok, St} end
+            fun(_T, _P, _PD, St) -> {ok, St} end
         ])
     ),
 
@@ -262,7 +263,7 @@ skip_last_fetch_after_crash() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, '_'],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, earliest, '_', '_'],
         ?WAIT_TIMEOUT_MS
     ),
     meck:reset(kafine_parallel_handler),
@@ -282,7 +283,7 @@ skip_last_fetch_after_crash() ->
     ?assertWait(
         kafine_parallel_handler,
         start_link,
-        [?REF, {?TOPIC_NAME, ?PARTITION}, Offset + 1, '_'],
+        [?REF, {?TOPIC_NAME, ?PARTITION}, Offset + 1, '_', '_'],
         ?WAIT_TIMEOUT_MS
     ).
 

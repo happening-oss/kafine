@@ -57,7 +57,10 @@ empty_topic() ->
     lists:foreach(
         fun(P) ->
             ?assertWait(
-                test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(P), '_', '_'], ?WAIT_TIMEOUT_MS
+                test_fetcher_callback,
+                handle_partition_data,
+                ['_', '_', for_partition(P), '_', '_'],
+                ?WAIT_TIMEOUT_MS
             )
         end,
         Partitions
@@ -106,7 +109,6 @@ empty_topic_nonzero_offset() ->
 
     Partitions = [0, 1, 2, 3],
 
-
     ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{?TOPIC_NAME => Partitions}),
     ?assertEqual(length(NodeIds), length(kafine_node_fetcher_sup:list_children(?CONSUMER_REF))),
 
@@ -128,7 +130,10 @@ empty_topic_nonzero_offset() ->
     lists:foreach(
         fun(P) ->
             ?assertWait(
-                test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(P), '_', '_'], ?WAIT_TIMEOUT_MS
+                test_fetcher_callback,
+                handle_partition_data,
+                ['_', '_', for_partition(P), '_', '_'],
+                ?WAIT_TIMEOUT_MS
             )
         end,
         Partitions
@@ -163,7 +168,10 @@ subset_of_partitions() ->
     lists:foreach(
         fun(P) ->
             ?assertWait(
-                test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(P), '_', '_'], ?WAIT_TIMEOUT_MS
+                test_fetcher_callback,
+                handle_partition_data,
+                ['_', '_', for_partition(P), '_', '_'],
+                ?WAIT_TIMEOUT_MS
             )
         end,
         Partitions
@@ -200,14 +208,22 @@ partition_does_not_exist() ->
     % Now fetch the good partition and wait for a result, twice to ensure the bad one has a chance to be handled
     fetch_all(?CONSUMER_REF, ?TOPIC_NAME, [1], 0),
     ?assertWait(
-        test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(1), '_', '_'], ?WAIT_TIMEOUT_MS
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', '_', for_partition(1), '_', '_'],
+        ?WAIT_TIMEOUT_MS
     ),
     fetch_all(?CONSUMER_REF, ?TOPIC_NAME, [1], 0),
     ?assertWait(
-        test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(1), '_', '_'], ?WAIT_TIMEOUT_MS
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', '_', for_partition(1), '_', '_'],
+        ?WAIT_TIMEOUT_MS
     ),
 
-    ?assertNotCalled(test_fetcher_callback, handle_partition_data, ['_', '_', for_partition(41), '_', '_']),
+    ?assertNotCalled(test_fetcher_callback, handle_partition_data, [
+        '_', '_', for_partition(41), '_', '_'
+    ]),
 
     kafine_fetcher_sup:stop(Sup),
     kafine_metadata_cache:stop(M),

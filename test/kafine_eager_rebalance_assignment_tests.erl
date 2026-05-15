@@ -56,7 +56,9 @@ call_assignment_callbacks_after_join_leader() ->
     {ok, C} = kafine_coordinator:start_link(
         ?REBALANCE_REF_1, GroupId, Topics, #{}, MembershipOptions
     ),
-    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF_1, Topics, GroupId, MembershipOptions),
+    {ok, R} = kafine_eager_rebalance:start_link(
+        ?REBALANCE_REF_1, Topics, GroupId, MembershipOptions
+    ),
 
     % Wait for rebalance to complete
     receive
@@ -122,7 +124,9 @@ call_assignments_callbacks_after_join_follower() ->
     {ok, C} = kafine_coordinator:start_link(
         ?REBALANCE_REF_1, GroupId, Topics, #{}, MembershipOptions
     ),
-    {ok, R} = kafine_eager_rebalance:start_link(?REBALANCE_REF_1, Topics, GroupId, MembershipOptions),
+    {ok, R} = kafine_eager_rebalance:start_link(
+        ?REBALANCE_REF_1, Topics, GroupId, MembershipOptions
+    ),
 
     % Wait for rebalance to complete
     receive

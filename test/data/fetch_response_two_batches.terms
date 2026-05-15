@@ -1,0 +1,124 @@
+% This is a fetch response containing [[3, 4, 5], [6, 7, 8]].
+%
+% I created it with a real broker and wireshark like this:
+%
+% Produce 3 batches, each with 3 messages:
+%
+%   echo -n "key=value|key=value|key=value" | kcat -b localhost -P -D '|' -K '=' -t cars -p 2
+%   echo -n "key=value|key=value|key=value" | kcat -b localhost -P -D '|' -K '=' -t cars -p 2
+%   echo -n "key=value|key=value|key=value" | kcat -b localhost -P -D '|' -K '=' -t cars -p 2
+%
+% Fetch the last two batches:
+%
+%   kcat -b localhost -C -t cars -p 2 -o 3
+%
+% See the Wireshark doc in kafcod for how to convert it into an Erlang value.
+#{
+    responses =>
+        [
+            #{
+                topic => <<"cars">>,
+                partitions =>
+                    [
+                        #{
+                            high_watermark => 9,
+                            records =>
+                                [
+                                    #{
+                                        attributes => #{compression => none},
+                                        records =>
+                                            [
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value3">>,
+                                                    key => <<"key3">>,
+                                                    headers => [],
+                                                    offset_delta => 0,
+                                                    timestamp_delta => 0
+                                                },
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value4">>,
+                                                    key => <<"key4">>,
+                                                    headers => [],
+                                                    offset_delta => 1,
+                                                    timestamp_delta => 1
+                                                },
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value5">>,
+                                                    key => <<"key5">>,
+                                                    headers => [],
+                                                    offset_delta => 2,
+                                                    timestamp_delta => 2
+                                                }
+                                            ],
+                                        producer_id => -1,
+                                        producer_epoch => -1,
+                                        partition_leader_epoch => 0,
+                                        max_timestamp => 1725550237494,
+                                        magic => 2,
+                                        last_offset_delta => 2,
+                                        base_timestamp => 1725550237492,
+                                        base_sequence => -1,
+                                        base_offset => 3,
+                                        crc => 381418536
+                                    },
+                                    #{
+                                        attributes => #{compression => none},
+                                        records =>
+                                            [
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value6">>,
+                                                    key => <<"key6">>,
+                                                    headers => [],
+                                                    offset_delta => 0,
+                                                    timestamp_delta => 0
+                                                },
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value7">>,
+                                                    key => <<"key7">>,
+                                                    headers => [],
+                                                    offset_delta => 1,
+                                                    timestamp_delta => 1
+                                                },
+                                                #{
+                                                    attributes => 0,
+                                                    value => <<"value8">>,
+                                                    key => <<"key8">>,
+                                                    headers => [],
+                                                    offset_delta => 2,
+                                                    timestamp_delta => 2
+                                                }
+                                            ],
+                                        producer_id => -1,
+                                        producer_epoch => -1,
+                                        partition_leader_epoch => 0,
+                                        max_timestamp => 1725550238416,
+                                        magic => 2,
+                                        last_offset_delta => 2,
+                                        base_timestamp => 1725550238414,
+                                        base_sequence => -1,
+                                        base_offset => 6,
+                                        crc => 2128003712
+                                    }
+                                ],
+                            partition_index => 2,
+                            error_code => 0,
+                            last_stable_offset => 9,
+                            aborted_transactions => [],
+                            log_start_offset => 0,
+                            preferred_read_replica => -1
+                        }
+                    ]
+            }
+        ],
+    correlation_id => 2,
+    error_code => 0,
+    throttle_time_ms => 0,
+    session_id => 0
+}.
+
+%% -*- mode: erlang -*-

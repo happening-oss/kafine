@@ -31,11 +31,9 @@ setup() ->
 
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
     ok.
 
 cleanup(_) ->
@@ -76,14 +74,15 @@ start_topic_consumer() ->
     ),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
-    meck:wait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
-
-    % Then we should see a bunch of calls to begin_record_batch, handle_record, end_record_batch; we'll just check for
-    % the handle_record calls.
     TopicCount = 2,
     PartitionCount = 4,
-    ExpectedRecordCount = TopicCount * PartitionCount * 2,
-    meck:wait(ExpectedRecordCount, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    ExpectedCount = TopicCount * PartitionCount,
+    ?assertWait(ExpectedCount, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
+
+    % And again, for the partition data.
+    ?assertWait(
+        ExpectedCount, test_consumer_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS
+    ),
     ok.
 
 start_topic_consumer_latest() ->
@@ -131,7 +130,7 @@ start_topic_consumer_latest() ->
     ),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
-    meck:wait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
+    ?assertWait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
 
     % Offsets for each topic and partition should be requested
     lists:foreach(
@@ -161,12 +160,13 @@ start_topic_consumer_latest() ->
         kamock_partition_data:range(FirstOffset, LastOffset + 1, MessageBuilder)
     ),
 
-    % Then we should see a bunch of calls to begin_record_batch, handle_record, end_record_batch; we'll just check for
-    % the handle_record calls.
+    % And then the partition data
     TopicCount = 2,
     PartitionCount = 4,
-    ExpectedRecordCount = TopicCount * PartitionCount,
-    meck:wait(ExpectedRecordCount, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    ExpectedCount = TopicCount * PartitionCount,
+    ?assertWait(
+        ExpectedCount, test_consumer_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS
+    ),
 
     kafine:stop_topic_consumer(?CONSUMER_REF),
     kamock_broker:stop(Broker),
@@ -244,31 +244,31 @@ start_group_consumer() ->
     ?assertReceived({[kafine, rebalance, stop], _, _, _}),
 
     % There should be 8 calls to test_consumer_callback:init; one for each topic and partition:
-    meck:wait(8, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
-
-    % Then we should see a bunch of calls to begin_record_batch, handle_record, end_record_batch; we'll just check for
-    % the handle_record calls.
     TopicCount = 2,
     PartitionCount = 4,
-    ExpectedRecordCount = TopicCount * PartitionCount * 2,
-    ?assertWait(ExpectedRecordCount, test_consumer_callback, handle_record, '_', ?WAIT_TIMEOUT_MS),
+    ExpectedCount = TopicCount * PartitionCount,
+    ?assertWait(ExpectedCount, test_consumer_callback, init, '_', ?WAIT_TIMEOUT_MS),
+
+    % And partition data
+    ?assertWait(
+        ExpectedCount, test_consumer_callback, handle_partition_data, '_', ?WAIT_TIMEOUT_MS
+    ),
 
     kafine:stop_group_consumer(?CONSUMER_REF_1),
     kafine:stop_group_consumer(?CONSUMER_REF_2),
     kamock_cluster:stop(Cluster),
     ok.
 
-
 is_list_offsets_request(Topic, Partition) ->
     meck:is(
-        fun(#{topics := Topics}) ->
+        fun(#{topics := Topics}) when is_list(Topics) ->
             lists:any(
-                fun(#{name := T, partitions := Partitions}) ->
+                fun(#{name := T, partitions := Partitions}) when is_list(Partitions) ->
                     T =:= Topic andalso
-                    lists:any(
-                        fun(#{partition_index := PI}) -> PI == Partition end,
-                        Partitions
-                    )
+                        lists:any(
+                            fun(#{partition_index := PI}) -> PI == Partition end,
+                            Partitions
+                        )
                 end,
                 Topics
             )

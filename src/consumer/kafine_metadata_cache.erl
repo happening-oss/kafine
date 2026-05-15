@@ -24,6 +24,10 @@
     terminate/3
 ]).
 
+-export_type([
+    ref/0
+]).
+
 -include_lib("kernel/include/logger.hrl").
 
 -type topic_partition_metadata() ::

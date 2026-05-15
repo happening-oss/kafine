@@ -1,18 +1,53 @@
 -module(kafine_range_assignor_tests).
 -include_lib("eunit/include/eunit.hrl").
 
+% Unit tests for kafine_range_assignor. These are (broadly) taken from RangeAssignorTest.java, except that we don't
+% support static members or rack-aware assignment.
+
+-define(REF, ?MODULE).
+-define(CLUSTER_METADATA, kafine_cluster_metadata:from(?REF)).
+
+-define(EMPTY_EXISTING_ASSIGNMENT_USER_DATA, <<>>).
+
+name_test() ->
+    ?assertEqual(<<"range">>, kafine_range_assignor:name()).
+
 one_consumer_no_topic_test() ->
+    % Explicitly build the member list.
     M1 = create_member_id(1),
     Members = [
         #{
             member_id => M1,
             group_instance_id => null,
-            metadata => kafine_range_assignor:metadata([])
+            metadata => create_subscription_metadata([])
         }
     ],
     TopicPartitions = #{},
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(#{M1 => #{assigned_partitions => #{}, user_data => <<>>}}, Assignment),
+    ok.
+
+one_consumer_nonexistent_topic_test() ->
+    M1 = create_member_id(1),
+    Members = [
+        #{
+            member_id => M1,
+            group_instance_id => null,
+            metadata => create_subscription_metadata([<<"topic-a">>])
+        }
+    ],
+    TopicPartitions = #{},
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    ?assertEqual(
+        #{M1 => #{assigned_partitions => #{}, user_data => <<>>}},
+        Assignment
+    ),
     ok.
 
 one_consumer_one_topic_test() ->
@@ -21,11 +56,37 @@ one_consumer_one_topic_test() ->
         #{
             member_id => M1,
             group_instance_id => null,
-            metadata => kafine_range_assignor:metadata([<<"topic-a">>])
+            metadata => create_subscription_metadata([<<"topic-a">>])
         }
     ],
     TopicPartitions = #{<<"topic-a">> => [0, 1, 2]},
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
+    ?assertEqual(
+        #{M1 => #{assigned_partitions => #{<<"topic-a">> => [0, 1, 2]}, user_data => <<>>}},
+        Assignment
+    ),
+    ok.
+
+only_assigns_partitions_from_subscribed_topics_test() ->
+    M1 = create_member_id(1),
+    Members = [
+        #{
+            member_id => M1,
+            group_instance_id => null,
+            metadata => create_subscription_metadata([<<"topic-a">>])
+        }
+    ],
+    TopicPartitions = #{
+        <<"topic-a">> => [0, 1, 2],
+        <<"other">> => [0, 1, 2]
+    },
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{M1 => #{assigned_partitions => #{<<"topic-a">> => [0, 1, 2]}, user_data => <<>>}},
         Assignment
@@ -36,7 +97,7 @@ one_consumer_multiple_topics_test() ->
     M1 = create_member_id(1),
     Members = [
         #{
-            metadata => kafine_range_assignor:metadata([<<"topic-a">>, <<"topic-b">>]),
+            metadata => create_subscription_metadata([<<"topic-a">>, <<"topic-b">>]),
             member_id => M1,
             group_instance_id => null
         }
@@ -45,7 +106,10 @@ one_consumer_multiple_topics_test() ->
         <<"topic-a">> => [0],
         <<"topic-b">> => [0, 1]
     },
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{
             M1 => #{
@@ -65,18 +129,21 @@ two_consumers_one_topic_one_partition_test() ->
     M2 = create_member_id(2),
     Members = [
         #{
-            metadata => kafine_range_assignor:metadata([<<"topic-a">>]),
+            metadata => create_subscription_metadata([<<"topic-a">>]),
             member_id => M,
             group_instance_id => null
         }
      || M <- [M1, M2]
     ],
     TopicPartitions = #{<<"topic-a">> => [0]},
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{
             M1 => #{assigned_partitions => #{<<"topic-a">> => [0]}, user_data => <<>>},
-            M2 => #{assigned_partitions => #{<<"topic-a">> => []}, user_data => <<>>}
+            M2 => #{assigned_partitions => #{}, user_data => <<>>}
         },
         Assignment
     ),
@@ -87,14 +154,17 @@ two_consumers_one_topic_two_partitions_test() ->
     M2 = create_member_id(2),
     Members = [
         #{
-            metadata => kafine_range_assignor:metadata([<<"topic-a">>]),
+            metadata => create_subscription_metadata([<<"topic-a">>]),
             member_id => M,
             group_instance_id => null
         }
      || M <- [M1, M2]
     ],
     TopicPartitions = #{<<"topic-a">> => [0, 1]},
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{
             M1 => #{assigned_partitions => #{<<"topic-a">> => [0]}, user_data => <<>>},
@@ -109,7 +179,7 @@ two_consumers_two_topics_six_partitions_test() ->
     M2 = create_member_id(2),
     Members = [
         #{
-            metadata => kafine_range_assignor:metadata([<<"topic-a">>, <<"topic-b">>]),
+            metadata => create_subscription_metadata([<<"topic-a">>, <<"topic-b">>]),
             member_id => M,
             group_instance_id => null
         }
@@ -119,15 +189,24 @@ two_consumers_two_topics_six_partitions_test() ->
         <<"topic-a">> => [0, 1, 2, 3, 4, 5],
         <<"topic-b">> => [0, 1, 2, 3, 4, 5]
     },
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{
             M1 => #{
-                assigned_partitions => #{<<"topic-a">> => [0, 1, 2], <<"topic-b">> => [0, 1, 2]},
+                assigned_partitions => #{
+                    <<"topic-a">> => [0, 1, 2],
+                    <<"topic-b">> => [0, 1, 2]
+                },
                 user_data => <<>>
             },
             M2 => #{
-                assigned_partitions => #{<<"topic-a">> => [3, 4, 5], <<"topic-b">> => [3, 4, 5]},
+                assigned_partitions => #{
+                    <<"topic-a">> => [3, 4, 5],
+                    <<"topic-b">> => [3, 4, 5]
+                },
                 user_data => <<>>
             }
         },
@@ -136,17 +215,22 @@ two_consumers_two_topics_six_partitions_test() ->
     ok.
 
 multiple_consumers_mixed_topics_test() ->
+    % Alternative way to build the member list.
     Members = [
         create_member(1, [<<"topic-a">>]),
         create_member(2, [<<"topic-a">>, <<"topic-b">>]),
         create_member(3, [<<"topic-a">>])
     ],
+    % ...but we have to get the IDs back out like this:
     [M1, M2, M3] = [M || #{member_id := M} <- Members],
     TopicPartitions = #{
         <<"topic-a">> => [0, 1, 2],
         <<"topic-b">> => [0, 1]
     },
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
     ?assertEqual(
         #{
             M1 =>
@@ -178,7 +262,10 @@ multiple_consumers_mixed_topics_2_test() ->
         <<"topic-b">> => [0, 1, 2],
         <<"topic-c">> => [0, 1, 2]
     },
-    Assignment = kafine_range_assignor:assign(Members, TopicPartitions, <<>>),
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
 
     % M1 gets half of topic-a, all of topic-b; M2 gets the other half of topic-a, all of topic-c.
     ?assertEqual(
@@ -206,26 +293,45 @@ multiple_consumers_mixed_topics_2_test() ->
     ok.
 
 multiple_consumers_unwanted_topics_test() ->
-    % Question: what if none of the consumers express an interest in one of the topics?
-    % Answer: it'll fail when attempting to share the partitions between zero interested consumers.
-    %
-    % Don't do that.
-    % Make sure that the TopicPartitions passed to 'assign' only contains topics that the consumers ask for.
-    %
-    % This test is a placeholder, so I can hang this comment somewhere.
+    Members = [
+        create_member(1, [<<"topic-a">>]),
+        create_member(2, [<<"topic-a">>])
+    ],
+    [M1, M2] = [M || #{member_id := M} <- Members],
+    TopicPartitions = #{
+        <<"topic-a">> => [0, 1, 2],
+        <<"other">> => [0, 1]
+    },
+    meck:expect(kafine_cluster_metadata, partitions, create_topic_partition_info(TopicPartitions)),
+    Assignment = kafine_range_assignor:assign(
+        Members, ?CLUSTER_METADATA, ?EMPTY_EXISTING_ASSIGNMENT_USER_DATA
+    ),
+    ?assertEqual(
+        #{
+            M1 =>
+                #{assigned_partitions => #{<<"topic-a">> => [0, 1]}, user_data => <<>>},
+            M2 =>
+                #{assigned_partitions => #{<<"topic-a">> => [2]}, user_data => <<>>}
+        },
+        Assignment
+    ),
     ok.
 
 create_member_id(Index) ->
-    create_member_id(<<"member">>, Index).
+    kafine_assignor_tests:create_member_id(Index).
 
-create_member_id(Prefix, Index) when is_binary(Prefix), is_integer(Index) ->
-    % Member IDs are usually <prefix>-<uuid>, but we need them to be deterministic for tests.
-    Fixed = <<"11223344-5566-7788-9900">>,
-    iolist_to_binary(io_lib:format("~s-~s-~12..0B", [Prefix, Fixed, Index])).
-
-create_member(Index, Topics) ->
+create_member(Index, Topics) when is_integer(Index) ->
+    MemberId = create_member_id(Index),
+    create_member(MemberId, Topics);
+create_member(MemberId, Topics) when is_binary(MemberId) ->
     #{
-        member_id => create_member_id(Index),
-        metadata => kafine_range_assignor:metadata(Topics),
+        member_id => MemberId,
+        metadata => create_subscription_metadata(Topics),
         group_instance_id => null
     }.
+
+create_subscription_metadata(Topics) ->
+    #{topics => Topics, user_data => <<>>}.
+
+create_topic_partition_info(TopicPartitions) ->
+    kafine_assignor_tests:create_topic_partition_info(TopicPartitions).

@@ -2,12 +2,24 @@
 -behaviour(kafine_consumer_callback).
 -export([
     init/3,
-    begin_record_batch/5,
-    handle_record/4,
-    end_record_batch/5
+    handle_partition_data/4
 ]).
 
 -include_lib("kernel/include/logger.hrl").
+
+handle_partition_data(Topic, Partition, PartitionData, State) ->
+    Info = kafine_partition_data:info(PartitionData),
+    #{fetch_offset := CurrentOffset} = Info,
+    {ok, State2} = begin_record_batch(Topic, Partition, CurrentOffset, Info, State),
+    {State3, NextOffset} = kafine_partition_data:reduce_while(
+        fun(Record, Acc) ->
+            {ok, Acc2} = handle_record(Topic, Partition, Record, Acc),
+            {cont, Acc2}
+        end,
+        State2,
+        PartitionData
+    ),
+    end_record_batch(Topic, Partition, NextOffset, Info, State3).
 
 -record(state, {
     formatter,

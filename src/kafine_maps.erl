@@ -3,6 +3,7 @@
 -export([
     get/2,
     get/3,
+    find/2,
     is_key/2,
     put/3,
     remove/2,
@@ -35,6 +36,16 @@ get_([Key], Map, Default) ->
     maps:get(Key, Map, Default);
 get_([Key | Keys], Map1, Default) ->
     get_(Keys, maps:get(Key, Map1, #{}), Default).
+
+find(Keys, Map) when is_list(Keys), is_map(Map) ->
+    find_(Keys, Map);
+find(Keys, Map) ->
+    error(badarg, [Keys, Map]).
+
+find_([Key], Map) ->
+    maps:find(Key, Map);
+find_([Key | Keys], Map1) ->
+    find_(Keys, maps:get(Key, Map1, #{})).
 
 is_key(Keys, Map) when is_list(Keys), is_map(Map) ->
     is_key_(Keys, Map);

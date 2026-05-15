@@ -1,8 +1,6 @@
 -module(kafine_fetch_response_partition_data_pause_tests).
 -include_lib("eunit/include/eunit.hrl").
 
--include("history_matchers.hrl").
-
 -define(CALLBACK_STATE, {state, ?MODULE}).
 
 all_test_() ->
@@ -10,18 +8,16 @@ all_test_() ->
         fun single_batch_pause_offset_4/0,
         fun two_batches_pause_offset_4/0,
 
-        fun single_batch_pause_end_record_batch/0,
-        fun two_batches_pause_end_record_batch/0
+        fun single_batch_pause_offset_5/0,
+        fun two_batches_pause_offset_8/0
     ]}.
 
 setup() ->
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
     ok.
 
 cleanup(_) ->
@@ -35,10 +31,7 @@ single_batch_pause_offset_4() ->
     ),
 
     % Pause after the message with offset 4. It's in the first batch. We shouldn't see messages 5-8.
-    meck:expect(test_consumer_callback, handle_record, fun
-        (_T, _P, _M = #{offset := 4}, St) -> {pause, St};
-        (_T, _P, _M, St) -> {ok, St}
-    end),
+    meck:expect(test_consumer_callback, handle_partition_data, pause_at_offset(4)),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
         Topic,
@@ -48,18 +41,6 @@ single_batch_pause_offset_4() ->
         ?CALLBACK_STATE
     ),
 
-    Topic = <<"cars">>,
-    Partition = 2,
-
-    ?assertMatch(
-        [
-            ?begin_record_batch(Topic, Partition, FetchOffset, 0, 9, 9),
-            ?handle_record(Topic, Partition, 3, _, _),
-            ?handle_record(Topic, Partition, 4, _, _),
-            ?end_record_batch(Topic, Partition, 5, 0, 9, 9)
-        ],
-        meck:history(test_consumer_callback)
-    ),
     ?assertMatch({5, paused, ?CALLBACK_STATE}, FoldResult),
     ok.
 
@@ -71,10 +52,7 @@ two_batches_pause_offset_4() ->
     ),
 
     % Pause after the message with offset 4. It's in the first batch. We shouldn't see messages 5-8.
-    meck:expect(test_consumer_callback, handle_record, fun
-        (_T, _P, _M = #{offset := 4}, St) -> {pause, St};
-        (_T, _P, _M, St) -> {ok, St}
-    end),
+    meck:expect(test_consumer_callback, handle_partition_data, pause_at_offset(4)),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
         Topic,
@@ -84,32 +62,18 @@ two_batches_pause_offset_4() ->
         ?CALLBACK_STATE
     ),
 
-    Topic = <<"cars">>,
-    Partition = 2,
-
-    ?assertMatch(
-        [
-            ?begin_record_batch(Topic, Partition, FetchOffset, 0, 9, 9),
-            ?handle_record(Topic, Partition, 3, _, _),
-            ?handle_record(Topic, Partition, 4, _, _),
-            ?end_record_batch(Topic, Partition, 5, 0, 9, 9)
-        ],
-        meck:history(test_consumer_callback)
-    ),
     ?assertMatch({5, paused, ?CALLBACK_STATE}, FoldResult),
     ok.
 
-single_batch_pause_end_record_batch() ->
+single_batch_pause_offset_5() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_single_batch(),
     {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
         FetchResponse
     ),
 
-    % Pause at the end of the batch.
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _M, _Info, St) ->
-        {pause, St}
-    end),
+    % Pause at the end of the first batch.
+    meck:expect(test_consumer_callback, handle_partition_data, pause_at_offset(5)),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
         Topic,
@@ -119,33 +83,18 @@ single_batch_pause_end_record_batch() ->
         ?CALLBACK_STATE
     ),
 
-    Topic = <<"cars">>,
-    Partition = 2,
-
-    ?assertMatch(
-        [
-            ?begin_record_batch(Topic, Partition, FetchOffset, 0, 9, 9),
-            ?handle_record(Topic, Partition, 3, _, _),
-            ?handle_record(Topic, Partition, 4, _, _),
-            ?handle_record(Topic, Partition, 5, _, _),
-            ?end_record_batch(Topic, Partition, 6, 0, 9, 9)
-        ],
-        meck:history(test_consumer_callback)
-    ),
     ?assertMatch({6, paused, ?CALLBACK_STATE}, FoldResult),
     ok.
 
-two_batches_pause_end_record_batch() ->
+two_batches_pause_offset_8() ->
     FetchOffset = 3,
     FetchResponse = kafine_fetch_response_partition_data_tests:canned_fetch_response_two_batches(),
     {Topic, PartitionData} = kafine_fetch_response_partition_data_tests:split_fetch_response(
         FetchResponse
     ),
 
-    % Pause at the end of the batch.
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _M, _Info, St) ->
-        {pause, St}
-    end),
+    % Pause at the end of the second batch.
+    meck:expect(test_consumer_callback, handle_partition_data, pause_at_offset(8)),
 
     FoldResult = kafine_fetch_response_partition_data:fold(
         Topic,
@@ -155,21 +104,19 @@ two_batches_pause_end_record_batch() ->
         ?CALLBACK_STATE
     ),
 
-    Topic = <<"cars">>,
-    Partition = 2,
-
-    ?assertMatch(
-        [
-            ?begin_record_batch(Topic, Partition, FetchOffset, 0, 9, 9),
-            ?handle_record(Topic, Partition, 3, _, _),
-            ?handle_record(Topic, Partition, 4, _, _),
-            ?handle_record(Topic, Partition, 5, _, _),
-            ?handle_record(Topic, Partition, 6, _, _),
-            ?handle_record(Topic, Partition, 7, _, _),
-            ?handle_record(Topic, Partition, 8, _, _),
-            ?end_record_batch(Topic, Partition, 9, 0, 9, 9)
-        ],
-        meck:history(test_consumer_callback)
-    ),
     ?assertMatch({9, paused, ?CALLBACK_STATE}, FoldResult),
     ok.
+
+pause_at_offset(ExpectedOffset) ->
+    fun(_T, _P, PD, St) ->
+        % We could just return {pause, NextOffset, State}, but we'll do it properly.
+        {St2, NextOffset} = kafine_partition_data:reduce_while(
+            fun
+                (#{offset := Offset}, Acc) when Offset =:= ExpectedOffset -> {halt, Acc};
+                (_, Acc) -> {cont, Acc}
+            end,
+            St,
+            PD
+        ),
+        {pause, NextOffset, St2}
+    end.

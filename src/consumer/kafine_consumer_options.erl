@@ -26,11 +26,12 @@ default_options() ->
         min_bytes => ?MIN_BYTES,
         max_bytes => ?MAX_BYTES,
         partition_max_bytes => ?PARTITION_MAX_BYTES,
-        isolation_level => ?DEFAULT_ISOLATION_LEVEL
+        isolation_level => ?DEFAULT_ISOLATION_LEVEL,
+        retry_backoff => kafine_backoff:exponential()
     }.
 
 required_options() ->
-    [max_wait_ms, min_bytes, max_bytes, partition_max_bytes, isolation_level].
+    [max_wait_ms, min_bytes, max_bytes, partition_max_bytes, isolation_level, retry_backoff].
 
 validate_option(max_wait_ms, Value) when is_integer(Value), Value >= 0 ->
     ok;
@@ -42,5 +43,7 @@ validate_option(partition_max_bytes, Value) when is_integer(Value), Value >= 0 -
     ok;
 validate_option(isolation_level, Value) when Value == read_uncommitted; Value == read_committed ->
     ok;
+validate_option(retry_backoff, Value) ->
+    kafine_backoff:validate_options(Value);
 validate_option(Key, Value) ->
     error(badarg, [Key, Value]).

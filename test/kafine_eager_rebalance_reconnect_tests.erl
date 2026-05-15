@@ -401,7 +401,7 @@ kill_kamock_connections() ->
         {kamock_broker_protocol, Pid, _, _} <- supervisor:which_children(Sup)
     ],
     lists:foreach(
-        fun(Pid) ->
+        fun(Pid) when is_pid(Pid) ->
             exit(Pid, kill)
         end,
         Connections

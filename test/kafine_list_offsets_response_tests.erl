@@ -2,11 +2,6 @@
 -include_lib("eunit/include/eunit.hrl").
 -include_lib("kafcod/include/error_code.hrl").
 
--include("assert_meck.hrl").
-
--define(JOB_ID, 3).
--define(NODE_ID, 102).
-
 all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun handle_response/0,
@@ -65,32 +60,24 @@ handle_response() ->
         ]
     },
 
-    ok = kafine_list_offsets:handle_response(
-        ListOffsetsResponse, RequestedOffsets, ?JOB_ID, ?NODE_ID, self()
-    ),
+    {ok, Result} = kafine_list_offsets:handle_response(ListOffsetsResponse, RequestedOffsets),
 
-    ?assertCalled(
-        kafine_fetcher,
-        complete_job,
-        [
-            self(),
-            ?JOB_ID,
-            ?NODE_ID,
-            #{
-                <<"cats">> => #{
-                    61 => {update_offset, 44},
-                    62 => {update_offset, 75}
-                },
-                <<"dogs">> => #{
-                    61 => {update_offset, 52},
-                    62 => {update_offset, 54}
-                },
-                <<"fish">> => #{
-                    61 => {update_offset, 68},
-                    62 => {update_offset, 90}
-                }
+    ?assertEqual(
+        #{
+            <<"cats">> => #{
+                61 => {update_offset, 44},
+                62 => {update_offset, 75}
+            },
+            <<"dogs">> => #{
+                61 => {update_offset, 52},
+                62 => {update_offset, 54}
+            },
+            <<"fish">> => #{
+                61 => {update_offset, 68},
+                62 => {update_offset, 90}
             }
-        ]
+        },
+        Result
     ),
     ok.
 
@@ -127,27 +114,19 @@ handle_response_with_replay_request() ->
         ]
     },
 
-    ok = kafine_list_offsets:handle_response(
-        ListOffsetsResponse, RequestedOffsets, ?JOB_ID, ?NODE_ID, self()
-    ),
+    {ok, Result} = kafine_list_offsets:handle_response(ListOffsetsResponse, RequestedOffsets),
 
-    ?assertCalled(
-        kafine_fetcher,
-        complete_job,
-        [
-            self(),
-            ?JOB_ID,
-            ?NODE_ID,
-            #{
-                <<"cats">> => #{
-                    61 => {update_offset, 5},
-                    62 => {update_offset, 0}
-                },
-                <<"dogs">> => #{
-                    61 => {update_offset, 0},
-                    62 => {update_offset, 0}
-                }
+    ?assertEqual(
+        #{
+            <<"cats">> => #{
+                61 => {update_offset, 5},
+                62 => {update_offset, 0}
+            },
+            <<"dogs">> => #{
+                61 => {update_offset, 0},
+                62 => {update_offset, 0}
             }
-        ]
+        },
+        Result
     ),
     ok.

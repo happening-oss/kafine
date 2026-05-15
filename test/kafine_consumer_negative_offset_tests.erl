@@ -17,7 +17,8 @@ all_test_() ->
     {foreach, fun setup/0, fun cleanup/1, [
         fun last_with_new_topic/0,
         fun last_with_single_message/0,
-        fun last_with_multiple_messages/0
+        fun last_with_multiple_messages/0,
+        fun last_with_deleted_messages/0
     ]}.
 
 setup() ->
@@ -202,7 +203,7 @@ last_with_multiple_messages() ->
         ?FETCHER_METADATA
     ),
 
-    % There's a bunch of messages on the partition.
+    % There's a bunch of messages on the partition, starting at a non-zero offset.
     kafine_kamock:produce(10, 15),
 
     ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => [Partition]}),
@@ -250,8 +251,85 @@ last_with_multiple_messages() ->
     ),
     ?assertMatch(
         [
-            % We don't see key0, key1.
             {TopicName, Partition, #{key := <<"key15">>}}
+        ],
+        received_records()
+    ),
+
+    kafine_fetcher_sup:stop(Sup),
+    kafine_metadata_cache:stop(M),
+    kafine_bootstrap:stop(B),
+    kamock_broker:stop(Broker),
+    ok.
+
+last_with_deleted_messages() ->
+    {ok, Broker} = kamock_broker:start(?BROKER_REF),
+
+    TopicName = ?TOPIC_NAME,
+    Partition = 0,
+    TopicOptions = kafine_topic_options:validate_options([TopicName], #{
+        ?TOPIC_NAME => #{
+            initial_offset => -1, offset_reset_policy => latest
+        }
+    }),
+
+    {ok, B} = kafine_bootstrap:start_link(?CONSUMER_REF, Broker, ?CONNECTION_OPTIONS),
+    {ok, M} = kafine_metadata_cache:start_link(?CONSUMER_REF),
+    {ok, Sup} = kafine_fetcher_sup:start_link(
+        ?CONSUMER_REF,
+        ?CONNECTION_OPTIONS,
+        ?CONSUMER_OPTIONS,
+        TopicOptions,
+        ?FETCHER_METADATA
+    ),
+
+    % We _had_ some messages on the partition, but we deleted all of them.
+    kafine_kamock:produce(5, 5),
+
+    ok = kafine_fetcher:set_topic_partitions(?CONSUMER_REF, #{TopicName => [Partition]}),
+    fetch(?CONSUMER_REF, TopicName, Partition, -1),
+
+    % We should see a ListOffsets, then a Fetch.
+    meck:wait(
+        kamock_list_offsets,
+        handle_list_offsets_request,
+        [has_timestamp(?LATEST_TIMESTAMP), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    meck:wait(
+        kamock_fetch,
+        handle_fetch_request,
+        [has_fetch_offset(5), '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+
+    % We should see no messages.
+    ?assertWait(
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', ?TOPIC_NAME, has_next_offset(5), '_', '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    ?assertMatch(
+        [],
+        received_records()
+    ),
+    meck:reset(test_fetcher_callback),
+
+    % If we produce another message, we be able to fetch it.
+    kafine_kamock:produce(5, 6),
+
+    fetch(?CONSUMER_REF, TopicName, Partition, 5),
+
+    ?assertWait(
+        test_fetcher_callback,
+        handle_partition_data,
+        ['_', ?TOPIC_NAME, has_next_offset(6), '_', '_'],
+        ?WAIT_TIMEOUT_MS
+    ),
+    ?assertMatch(
+        [
+            {TopicName, Partition, #{key := <<"key5">>}}
         ],
         received_records()
     ),
@@ -289,7 +367,9 @@ has_fetch_offset(ExpectedOffset) ->
 has_next_offset(ExpectedNextOffset) ->
     meck:is(
         fun
-            (#{records := [#{base_offset := Base, last_offset_delta := LastDelta}]}) ->
+            (#{records := [#{base_offset := Base, last_offset_delta := LastDelta}]}) when
+                is_integer(Base), is_integer(LastDelta)
+            ->
                 NextOffset = Base + LastDelta + 1,
                 NextOffset =:= ExpectedNextOffset;
             (#{records := [], high_watermark := HighWatermark}) ->
@@ -311,7 +391,7 @@ received_records() ->
                             _
                         ]},
                         _}
-                ) ->
+                ) when is_list(Records) ->
                     [{Topic, Partition, Record} || Record <- Records];
                 (_) ->
                     []

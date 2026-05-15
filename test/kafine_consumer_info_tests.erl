@@ -29,11 +29,9 @@ setup() ->
 
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
     ok.
 
 cleanup(_) ->
@@ -69,46 +67,49 @@ topic_consumer_info() ->
     ExpectedConnectionOptions = kafine_connection_options:validate_options(?CONNECTION_OPTIONS),
     ExpectedTopicOptions = kafine_topic_options:validate_options(Topics, #{}),
     ExpectedBrokers = lists:map(fun(B) -> maps:with([node_id, host, port], B) end, Brokers),
-    ?assertMatch(#{
-        bootstrap := #{
-            broker := Bootstrap,
-            connection_options := ExpectedConnectionOptions,
-            connection := _
-        },
-        metadata := #{
-            table := _,
-            brokers := ExpectedBrokers,
-            partitions := #{
-                TopicName1 := #{
-                    0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
-                    1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
-                    2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
-                    3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
-                },
-                TopicName2 := #{
-                    0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
-                    1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
-                    2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
-                    3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+    ?assertMatch(
+        #{
+            bootstrap := #{
+                broker := Bootstrap,
+                connection_options := ExpectedConnectionOptions,
+                connection := _
+            },
+            metadata := #{
+                table := _,
+                brokers := ExpectedBrokers,
+                partitions := #{
+                    TopicName1 := #{
+                        0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
+                        1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
+                        2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
+                        3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+                    },
+                    TopicName2 := #{
+                        0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
+                        1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
+                        2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
+                        3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+                    }
                 }
+            },
+            fetcher := #{
+                brokers := _,
+                topic_partition_nodes := _
+            },
+            node_fetchers := _,
+            parallel_subscription := #{
+                topic_options := ExpectedTopicOptions,
+                callback_mod := test_consumer_callback,
+                callback_arg := ?CALLBACK_ARGS,
+                children := _
+            },
+            topic_subscriber := #{
+                topics := Topics,
+                subscription_callback := {kafine_parallel_subscription_callback, ?CONSUMER_REF}
             }
         },
-        fetcher := #{
-            brokers := _,
-            topic_partition_nodes := _
-        },
-        node_fetchers := _,
-        parallel_subscription := #{
-            topic_options := ExpectedTopicOptions,
-            callback_mod := test_consumer_callback,
-            callback_arg := ?CALLBACK_ARGS,
-            children := _
-        },
-        topic_subscriber := #{
-            topics := Topics,
-            subscription_callback := {kafine_parallel_subscription_callback, ?CONSUMER_REF}
-        }
-    }, kafine_consumer:info(?CONSUMER_REF)).
+        kafine_consumer:info(?CONSUMER_REF)
+    ).
 
 group_consumer_info() ->
     telemetry_test:attach_event_handlers(self(), [[kafine, rebalance, stop]]),
@@ -145,55 +146,58 @@ group_consumer_info() ->
     ExpectedTopicOptions = kafine_topic_options:validate_options(Topics, #{}),
     ExpectedBrokers = lists:map(fun(B) -> maps:with([node_id, host, port], B) end, Brokers),
 
-    ?assertMatch(#{
-        bootstrap := #{
-            broker := Bootstrap,
-            connection_options := ExpectedConnectionOptions,
-            connection := _
-        },
-        metadata := #{
-            table := _,
-            brokers := ExpectedBrokers,
-            partitions := #{
-                TopicName1 := #{
-                    0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
-                    1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
-                    2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
-                    3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
-                },
-                TopicName2 := #{
-                    0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
-                    1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
-                    2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
-                    3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+    ?assertMatch(
+        #{
+            bootstrap := #{
+                broker := Bootstrap,
+                connection_options := ExpectedConnectionOptions,
+                connection := _
+            },
+            metadata := #{
+                table := _,
+                brokers := ExpectedBrokers,
+                partitions := #{
+                    TopicName1 := #{
+                        0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
+                        1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
+                        2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
+                        3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+                    },
+                    TopicName2 := #{
+                        0 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]},
+                        1 := #{leader := 102, replicas := [102, 101, 103], isr := [102, 101, 103]},
+                        2 := #{leader := 103, replicas := [103, 101, 102], isr := [103, 101, 102]},
+                        3 := #{leader := 101, replicas := [101, 102, 103], isr := [101, 102, 103]}
+                    }
                 }
+            },
+            fetcher := #{
+                brokers := _,
+                topic_partition_nodes := _
+            },
+            node_fetchers := _,
+            parallel_subscription := #{
+                topic_options := ExpectedTopicOptions,
+                callback_mod := test_consumer_callback,
+                callback_arg := ?CALLBACK_ARGS,
+                children := _
+            },
+            coordinator := #{
+                group_id := GroupId,
+                topics := Topics,
+                connection_options := ExpectedConnectionOptions,
+                membership_options := _,
+                broker := _,
+                connection := _
+            },
+            eager_rebalance := #{
+                group_id := GroupId,
+                member_id := _,
+                generation_id := _,
+                membership_options := _,
+                assignment := _,
+                subscription_callback := {kafine_parallel_subscription_callback, ?CONSUMER_REF}
             }
         },
-        fetcher := #{
-            brokers := _,
-            topic_partition_nodes := _
-        },
-        node_fetchers := _,
-        parallel_subscription := #{
-            topic_options := ExpectedTopicOptions,
-            callback_mod := test_consumer_callback,
-            callback_arg := ?CALLBACK_ARGS,
-            children := _
-        },
-        coordinator := #{
-            group_id := GroupId,
-            topics := Topics,
-            connection_options := ExpectedConnectionOptions,
-            membership_options := _,
-            broker := _,
-            connection := _
-        },
-        eager_rebalance := #{
-            group_id := GroupId,
-            member_id := _,
-            generation_id := _,
-            membership_options := _,
-            assignment := _,
-            subscription_callback := {kafine_parallel_subscription_callback, ?CONSUMER_REF}
-        }
-    }, kafine_consumer:info(?CONSUMER_REF)).
+        kafine_consumer:info(?CONSUMER_REF)
+    ).

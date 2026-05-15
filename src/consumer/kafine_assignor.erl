@@ -1,4 +1,6 @@
 -module(kafine_assignor).
+-export([get_topic_partitions/2]).
+
 -export_type([
     metadata/0,
     member/0,
@@ -8,27 +10,24 @@
 ]).
 
 -callback name() -> binary().
--callback metadata(Topics :: [kafine:topic()]) -> metadata().
-
--type metadata() :: #{
-    % The list of topics to which you want to subscribe.
-    topics := [kafine:topic()],
-
-    % The user_data in metadata is opaque to the broker. It can be used (for example) as a hint to the assignor about
-    % assignment decisions. The example given in the Kafka docs suggests that you could include the member's rack ID and
-    % have a rack-aware assignor (though this is covered by ConsumerProtocolSubscription v3, should we choose to support
-    % it).
-    user_data := user_data()
-}.
 
 % Assignor:assign is called by the leader to assign the group members to the specified topics and partitions.
 -callback assign(
+    % Members is a list of member-subscription items.
     Members :: [member()],
-    TopicPartitions :: kafine_topic_partitions:t(),
+    % ClusterMetadata allows the assignor to inspect the cluster.
+    ClusterMetadata :: kafine_cluster_metadata:t(),
+    % AssignmentUserData is the user_data from the previous rebalance, if any.
     AssignmentUserData :: user_data()
 ) -> assignments().
 
 -type member_id() :: binary().
+-type metadata() ::
+    consumer_protocol_subscription:consumer_protocol_subscription_0()
+    | consumer_protocol_subscription:consumer_protocol_subscription_1()
+    | consumer_protocol_subscription:consumer_protocol_subscription_2()
+    | consumer_protocol_subscription:consumer_protocol_subscription_3().
+
 -type member() :: #{
     member_id := member_id(), group_instance_id := binary() | null, metadata := metadata()
 }.
@@ -49,3 +48,16 @@
 -type assigned_partitions() :: kafine_topic_partitions:t().
 -type user_data() :: opaque_binary() | null.
 -type opaque_binary() :: binary().
+
+get_topic_partitions(Members, ClusterMetadata) ->
+    Topics = lists:foldl(
+        fun(_M = #{metadata := #{topics := Topics}}, Acc) ->
+            sets:union(Acc, sets:from_list(Topics))
+        end,
+        sets:new(),
+        Members
+    ),
+    TopicPartitionInfo = kafine_cluster_metadata:partitions(ClusterMetadata, sets:to_list(Topics)),
+    maps:map(
+        fun(_Topic, Partitions) -> maps:keys(Partitions) end, TopicPartitionInfo
+    ).

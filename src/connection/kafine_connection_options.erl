@@ -24,7 +24,7 @@ default_options() ->
         connect_timeout => infinity,
         request_timeout_ms => ?DEFAULT_REQUEST_TIMEOUT_MS,
         metadata => ?DEFAULT_METADATA,
-        backoff => kafine_backoff:fixed()
+        backoff => kafine_backoff:exponential()
     }.
 
 validate_option(transport, Transport) when Transport =:= gen_tcp; Transport =:= ssl ->

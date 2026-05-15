@@ -11,7 +11,7 @@ Kafka client for Erlang.
     start_group_consumer/10,
     stop_group_consumer/1,
 
-    start_producer/3,
+    start_producer/4,
     stop_producer/1
 ]).
 
@@ -35,7 +35,8 @@ Kafka client for Erlang.
     parallel_handler_options/0,
     offset_reset_policy/0,
     membership_options/0,
-    subscriber_options/0
+    subscriber_options/0,
+    producer_options/0
 ]).
 
 -type broker() :: #{
@@ -88,7 +89,9 @@ Kafine by default appends `host`, `port` and `node_id` to the `metadata`.
 
     partition_max_bytes => non_neg_integer(),
 
-    isolation_level => isolation_level()
+    isolation_level => isolation_level(),
+
+    retry_backoff => kafine_backoff:config()
 }.
 
 -type topic_options() :: #{
@@ -166,6 +169,40 @@ Used when starting a topic consumer.
     subscription_callback => {module(), term()}
 }.
 
+?DOC("""
+Used when starting a producer.
+
+- `acks`: The number of acknowledgments the producer requires the leader to have received before
+  considering a request complete.
+  - `none`: The producer will respond to the request immediately after sending it, without waiting
+    for the broker to acknowledge the request.
+  - `leader`: The producer will wait until the the broker has sent a successful acknowledgement of
+    the request, or until the request fails.
+  - `all`: The producer will instruct the broker to wait until all in sync replicas have written the
+    record before acknowledging.
+- `compression`: The compression algorithm to use when producing messages. Valid values are none,
+  gzip, snappy, lz4 and zstd.
+- `linger_ms`: After receiving a message on a topic partition, wait up to this long for more
+  messages before producing. Note that the topic partition may linger for less than this limit if
+  another topic partition from the same node has a completed batch to send.
+- `max_batch_size_bytes`: The maximum size of a batch of messages to produce to a topic partition.
+  Note that this is a soft limit; if the producer receives a message that would put the batch over
+  the limit, that message will be produced anyway as a single-message batch.
+- `max_request_size_bytes`: The maximum total size of the batches to include in in a produce
+  request. Note that this is enforced on the uncompressed size of the batches.
+- `retry_backoff`: The backoff strategy to use when retrying failed produce requests.
+- `metadata`: An arbitrary map of metadata to include with metrics
+""").
+-type producer_options() :: #{
+    acks => none | leader | all,
+    compression => none | gzip | snappy | lz4 | zstd,
+    linger_ms => non_neg_integer(),
+    max_batch_size_bytes => non_neg_integer(),
+    max_request_size_bytes => non_neg_integer(),
+    retry_backoff => kafine_backoff:config(),
+    metadata => telemetry:event_metadata()
+}.
+
 % TODO: These types should be in kafcod, maybe?
 -type node_id() :: non_neg_integer().
 -type client_id() :: binary().
@@ -183,12 +220,6 @@ Used when starting a topic consumer.
     start_topic_consumer_ret/0,
     start_group_consumer_ret/0
 ]).
-
-%% Ref is used to refer to the consumer later, e.g., in kafine:stop_topic_consumer/1.
-%% Bootstrap is the bootstrap broker.
-%% Topics is a list of topics.
-%% Options is the consumer options; the defaults are probably fine for most purposes.
-%% Callback must implement the kafine_consumer_callback behaviour.
 
 -type consumer_ref() :: term().
 -type start_topic_consumer_ret() :: supervisor:startchild_ret().
@@ -248,7 +279,9 @@ start_topic_consumer(
         maps:merge(DefaultParallelHandlerOptions, ParallelHandlerOptions0)
     ),
 
-    ParallelCallbackChildSpec = parallel_subscription_child_spec(Ref, ParallelHandlerOptions),
+    ParallelCallbackChildSpec = parallel_subscription_child_spec(
+        Ref, ParallelHandlerOptions, Metadata
+    ),
     TopicSubscriberChildSpec = topic_subscriber_child_spec(
         Ref, Topics, SubscriberOptions
     ),
@@ -318,7 +351,9 @@ start_group_consumer(
     CoordinatorChildSpec = coordinator_child_spec(
         Ref, GroupId, Topics, ConnectionOptions, MembershipOptions
     ),
-    ParallelCallbackChildSpec = parallel_subscription_child_spec(Ref, ParallelHandlerOptions),
+    ParallelCallbackChildSpec = parallel_subscription_child_spec(
+        Ref, ParallelHandlerOptions, Metadata
+    ),
     EagerRebalanceChildSpec = eager_rebalance_child_spec(Ref, Topics, GroupId, MembershipOptions),
 
     ChildSpec = consumer_child_spec(
@@ -421,22 +456,32 @@ topic_subscriber_child_spec(
         modules => [kafine_coordinator]
     }.
 
-parallel_subscription_child_spec(Ref, Options) ->
+parallel_subscription_child_spec(Ref, Options, Metadata) ->
     Options1 = kafine_parallel_subscription_callback:validate_options(Options),
 
     #{
         id => kafine_parallel_subscription,
-        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options1]},
+        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options1, Metadata]},
         restart => permanent,
         shutdown => 5000,
         type => supervisor,
         modules => [kafine_parallel_subscription_impl]
     }.
 
-start_producer(Ref, Bootstrap, ConnectionOptions) ->
+-spec start_producer(
+    Ref :: term(),
+    Bootstrap :: broker(),
+    ConnectionOptions :: connection_options(),
+    ProducerOptions :: producer_options()
+) -> {ok, term()}.
+
+start_producer(Ref, Bootstrap, ConnectionOptions, ProducerOptions) ->
     ConnectionOptions1 = kafine_connection_options:validate_options(ConnectionOptions),
-    {ok, _} = kafine_producer_sup_sup:start_child(Ref, Bootstrap, ConnectionOptions1),
-    {ok, Ref}.
+    ProducerOptions1 = kafine_producer_options:validate_options(ProducerOptions),
+    {ok, Sup} = kafine_producer_sup_sup:start_child(
+        Ref, Bootstrap, ConnectionOptions1, ProducerOptions1
+    ),
+    {ok, Sup}.
 
 stop_producer(Ref) ->
     kafine_producer_sup_sup:stop_child(Ref),

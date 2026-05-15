@@ -207,7 +207,9 @@ has_fetch_offset(ExpectedOffset) ->
 has_next_offset(ExpectedNextOffset) ->
     meck:is(
         fun
-            (#{records := [#{base_offset := Base, last_offset_delta := LastDelta}]}) ->
+            (#{records := [#{base_offset := Base, last_offset_delta := LastDelta}]}) when
+                is_integer(Base), is_integer(LastDelta)
+            ->
                 NextOffset = Base + LastDelta + 1,
                 NextOffset =:= ExpectedNextOffset;
             (#{records := [], high_watermark := HighWatermark}) ->
@@ -229,7 +231,7 @@ received_records() ->
                             _
                         ]},
                         _}
-                ) ->
+                ) when is_list(Records) ->
                     [{Topic, Partition, Record} || Record <- Records];
                 (_) ->
                     []

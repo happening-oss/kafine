@@ -1,12 +1,12 @@
 -module(kafine_node_producer).
 -moduledoc false.
 -export([
-    start_link/4,
+    start_link/5,
     stop/1,
+    info/1,
 
     reqids_new/0,
-    produce/6,
-    produce/8,
+    produce/4,
     check_response/2
 ]).
 -behaviour(gen_statem).
@@ -18,18 +18,19 @@
 ]).
 -export_type([
     start_ret/0,
-    request_id_collection/0
+    request_id_collection/0,
+    info/0
 ]).
 
 -include_lib("kernel/include/logger.hrl").
 -include_lib("kafcod/include/api_key.hrl").
--include_lib("kafcod/include/ack.hrl").
 
 -type request_id_collection() :: gen_statem:request_id_collection().
 -type start_ret() :: gen_statem:start_ret().
 -spec start_link(
     Ref :: term(),
     ConnectionOptions :: kafine:connection_options(),
+    ProducerOptions :: kafine:producer_options(),
     Owner :: pid(),
     Broker :: kafine:broker()
 ) ->
@@ -38,6 +39,7 @@
 start_link(
     Ref,
     ConnectionOptions,
+    ProducerOptions,
     Owner,
     Broker = #{host := _, port := _, node_id := _}
 ) ->
@@ -45,7 +47,8 @@ start_link(
         ?MODULE,
         [
             Ref,
-            ConnectionOptions,
+            kafine_connection_options:validate_options(ConnectionOptions),
+            kafine_producer_options:validate_options(ProducerOptions),
             Owner,
             Broker
         ],
@@ -57,24 +60,33 @@ start_options() -> [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle
 stop(Pid) ->
     gen_statem:stop(Pid).
 
-produce(Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages) ->
-    call(Pid, {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages}).
+-type info() :: #{
+    state := dynamic(),
+    node_id := kafine:node_id(),
+    broker := kafine:broker(),
+    connection_options := kafine:connection_options(),
+    producer_options := kafine:producer_options(),
+    connection := kafine:connection() | undefined
+}.
 
-produce(
-    Pid, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages, Label, ReqIdCollection
+-spec info(Pid :: pid()) -> info().
+
+info(Pid) when is_pid(Pid) ->
+    gen_statem:call(Pid, info).
+
+-spec produce(
+    Pid :: pid(),
+    Batch :: kafine_topic_partition_data:t([kafine_producer:message()]),
+    Label :: any(),
+    ReqIdCollection :: request_id_collection()
 ) ->
-    send_request(
-        Pid,
-        {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages},
-        Label,
-        ReqIdCollection
-    ).
+    request_id_collection().
+
+produce(Pid, Batch, Label, ReqIdCollection) ->
+    send_request(Pid, {produce, Batch}, Label, ReqIdCollection).
 
 reqids_new() ->
     gen_statem:reqids_new().
-
-call(Pid, Request) ->
-    gen_statem:call(Pid, Request).
 
 send_request(Pid, Request, Label, ReqIdCollection) ->
     gen_statem:send_request(Pid, Request, Label, ReqIdCollection).
@@ -86,15 +98,19 @@ send_request(Pid, Request, Label, ReqIdCollection) ->
         {Response, Label, ReqIdCollection2}
         | no_request
         | no_reply,
-    Response :: {ok, Decoded :: map()} | {error, {Reason :: term(), gen_statem:server_ref()}},
+    Response ::
+        {ok, Decoded :: map()}
+        | {error, {Reason :: term(), gen_statem:server_ref()}}
+        | ProduceBatchResponse,
+    ProduceBatchResponse :: kafine_topic_partition_data:t(ok | {error, {kafka_error, integer()}}),
     Label :: term(),
     ReqIdCollection2 :: request_id_collection().
 
 check_response(Msg, ReqIdCollection) ->
     check_response(gen_statem:check_response(Msg, ReqIdCollection, true)).
 
-check_response({{reply, {ok, Response}}, Label, ReqIdCollection2}) ->
-    {{ok, Response}, Label, ReqIdCollection2};
+check_response({{reply, Response}, Label, ReqIdCollection2}) ->
+    {Response, Label, ReqIdCollection2};
 check_response({{error, Reason}, Label, ReqIdCollection2}) ->
     {{error, Reason}, Label, ReqIdCollection2};
 check_response(Result) when Result == no_request; Result == no_reply ->
@@ -108,28 +124,31 @@ callback_mode() ->
     broker :: kafine:broker(),
     connection :: kafine:connection() | undefined,
     connection_options :: kafine:connection_options(),
+    producer_options :: kafine:producer_options(),
     pending :: kafine_connection:request_id_collection()
 }).
 
 init([
     Ref,
     ConnectionOptions,
+    ProducerOptions = #{metadata := Metadata},
     Owner = Owner,
     Broker = #{node_id := NodeId}
 ]) ->
     process_flag(trap_exit, true),
-    Metadata = #{ref => Ref, node_id => NodeId},
-    logger:set_process_metadata(Metadata),
+    Metadata2 = maps:merge(#{ref => Ref, node_id => NodeId}, Metadata),
+    logger:set_process_metadata(Metadata2),
     kafine_proc_lib:set_label({?MODULE, Ref, NodeId}),
 
     % Register ourselves with the producer proc
     kafine_producer:set_node_producer(Owner, Broker, self()),
 
     StateData = #state{
-        metadata = Metadata,
+        metadata = Metadata2,
         broker = Broker,
         connection = undefined,
         connection_options = ConnectionOptions,
+        producer_options = ProducerOptions,
         pending = kafine_connection:reqids_new()
     },
     {ok, disconnected, StateData, [{next_event, internal, connect}]}.
@@ -150,18 +169,58 @@ handle_event(
     {next_state, ready, StateData2, []};
 handle_event(
     {call, From},
-    {produce, Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages},
-    _State,
-    StateData
+    {produce, Batch},
+    _State = ready,
+    StateData = #state{
+        metadata = Metadata,
+        connection_options = ConnectionOptions,
+        producer_options = ProducerOptions,
+        connection = Connection,
+        pending = Pending
+    }
 ) ->
-    StateData2 = send_messages(
-        Topic, PartitionIndex, ProduceOptions, BatchAttributes, Messages, From, StateData
+    Request = kafine_produce:build_request(Batch, ConnectionOptions, ProducerOptions),
+    Pending2 = kafine_connection:send_request(
+        Connection,
+        fun produce_request:encode_produce_request_8/1,
+        Request,
+        fun produce_response:decode_produce_response_8/1,
+        {produce_batch, From},
+        Pending,
+        request_metadata(?PRODUCE, 8, Metadata)
     ),
-    {keep_state, StateData2};
+    {keep_state, StateData#state{pending = Pending2}};
+handle_event(
+    {call, _From},
+    {produce, _Batch},
+    _State,
+    _StateData
+) ->
+    {keep_state_and_data, postpone};
 handle_event(info, Info, State, StateData = #state{pending = ReqIds}) ->
     % We can't tell the difference between send_request responses and normal info messages, so we have to check them
     % first.
-    check_response(kafine_connection:check_response(Info, ReqIds), Info, State, StateData).
+    check_response(kafine_connection:check_response(Info, ReqIds), Info, State, StateData);
+handle_event(
+    {call, From},
+    info,
+    State,
+    #state{
+        broker = Broker = #{node_id := NodeId},
+        connection_options = ConnectionOptions,
+        producer_options = ProducerOptions,
+        connection = Connection
+    }
+) ->
+    Info = #{
+        state => State,
+        node_id => NodeId,
+        broker => Broker,
+        connection_options => ConnectionOptions,
+        producer_options => ProducerOptions,
+        connection => Connection
+    },
+    {keep_state_and_data, {reply, From, Info}}.
 
 terminate(_Reason, _State, _StateData = #state{connection = Connection}) when
     Connection =/= undefined
@@ -197,48 +256,16 @@ handle_response(
 ) ->
     {ok, #{responses := [TopicResponse]}} = ProduceResponse,
     #{partition_responses := [PartitionResponse]} = TopicResponse,
-    {keep_state, StateData, [{reply, From, {ok, PartitionResponse}}]}.
-
-send_messages(
-    Topic,
-    PartitionIndex,
-    ProduceOptions,
-    BatchAttributes,
-    Messages,
-    From,
-    StateData = #state{connection = Connection, pending = Pending}
+    {keep_state, StateData, [{reply, From, {ok, PartitionResponse}}]};
+handle_response(
+    ProduceResponse,
+    {produce_batch, From},
+    _State,
+    StateData
 ) ->
-    Acks = encode_acks(maps:get(acks, ProduceOptions, full_isr)),
-    ProduceRequest = #{
-        transactional_id => null,
-        acks => Acks,
-        timeout_ms => 5_000,
-        topic_data => [
-            #{
-                name => Topic,
-                partition_data => [
-                    #{
-                        index => PartitionIndex,
-                        records => kafcod_message_set:prepare_message_set(BatchAttributes, Messages)
-                    }
-                ]
-            }
-        ]
-    },
-    Pending2 = kafine_connection:send_request(
-        Connection,
-        fun produce_request:encode_produce_request_8/1,
-        ProduceRequest,
-        fun produce_response:decode_produce_response_8/1,
-        {produce, From},
-        Pending,
-        request_metadata(?PRODUCE, 8)
-    ),
-    StateData#state{pending = Pending2}.
+    {ok, Response} = ProduceResponse,
+    Result = kafine_produce:handle_response(Response),
+    {keep_state, StateData, {reply, From, Result}}.
 
-encode_acks(none) -> ?ACK_NONE;
-encode_acks(leader) -> ?ACK_LEADER;
-encode_acks(full_isr) -> ?ACK_FULL_ISR.
-
-request_metadata(ApiKey, ApiVersion) ->
-    #{api_key => ApiKey, api_version => ApiVersion}.
+request_metadata(ApiKey, ApiVersion, Metadata) ->
+    Metadata#{api_key => ApiKey, api_version => ApiVersion}.

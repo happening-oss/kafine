@@ -6,6 +6,8 @@
 ]).
 
 -export([
+    set_next_offset/4,
+
     resume/3,
     resume/4
 ]).
@@ -36,6 +38,14 @@ register(Ref, Module) ->
 
 unregister(Ref) ->
     persistent_term:erase(key(Ref)).
+
+set_next_offset(Ref, Topic, Partition, Offset) ->
+    case persistent_term:get(key(Ref), undefined) of
+        undefined ->
+            {error, not_registered};
+        Module ->
+            Module:set_next_offset(Ref, Topic, Partition, Offset)
+    end.
 
 resume(Ref, Topic, Partition) ->
     resume(Ref, Topic, Partition, keep_current_offset).

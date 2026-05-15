@@ -3,7 +3,9 @@
 
 no_options_test() ->
     Validated = kafine_connection_options:validate_options(#{}),
-    ?assertMatch(#{client_id := <<"kafine">>, connect_timeout := infinity, metadata := #{}}, Validated),
+    ?assertMatch(
+        #{client_id := <<"kafine">>, connect_timeout := infinity, metadata := #{}}, Validated
+    ),
     ok.
 
 client_id_test() ->

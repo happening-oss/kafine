@@ -42,7 +42,7 @@ single_topic(_Config) ->
         Bootstrap,
         #{client_id => ?CLIENT_ID},
         #{},
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{
             callback_mod => topic_consumer_callback,
             callback_arg => self()
@@ -80,7 +80,7 @@ latest_offset(_Config) ->
         Bootstrap,
         #{client_id => ?CLIENT_ID},
         #{},
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{
             callback_mod => topic_consumer_callback,
             callback_arg => self()
@@ -162,7 +162,7 @@ nonzero_offset(_Config) ->
         Bootstrap,
         #{},
         #{},
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{
             callback_mod => topic_consumer_callback,
             callback_arg => self()
@@ -176,7 +176,7 @@ nonzero_offset(_Config) ->
         records_received(),
         % The lowest offset should be the expected first offset, and we should see at least the expected number of
         % records.
-        eventually:match(fun(Records = [{_Topic, _Partition, #{offset := Offset}} | _]) ->
+        eventually:match(fun(Records = [#{offset := Offset} | _]) ->
             Offset == ExpectedFirstOffset andalso length(Records) >= ExpectedCount
         end)
     ),
@@ -184,6 +184,7 @@ nonzero_offset(_Config) ->
     kafine:stop_topic_consumer(?CONSUMER_REF),
     ok.
 
+% TODO: DRY
 produce_message(Bootstrap, TopicName, PartitionIndex) ->
     Key = iolist_to_binary(
         io_lib:format("~s:~s:~B", [?MODULE, ?FUNCTION_NAME, erlang:system_time()])
@@ -194,14 +195,16 @@ produce_message(Bootstrap, TopicName, PartitionIndex) ->
     ok = kafka_fixtures:produce_message(Bootstrap, TopicName, PartitionIndex, Message),
     Key.
 
+% TODO: DRY
 records_received() ->
     eventually:probe(
         fun Receive(Acc) ->
             receive
-                {handle_record, R} ->
-                    Receive([R | Acc])
+                {handle_partition_data, {_T, _P, PD}} ->
+                    {Records, _} = kafine_partition_data:flatten(PD),
+                    Receive(Acc ++ Records)
             after 0 ->
-                lists:reverse(Acc)
+                Acc
             end
         end,
         [],
@@ -212,7 +215,7 @@ contains_record(Expected) ->
     eventually:match(
         fun(Acc) ->
             lists:any(
-                fun({_Topic, _Partition, _Message = #{key := Key}}) ->
+                fun(#{key := Key}) ->
                     Key =:= Expected
                 end,
                 Acc
@@ -226,7 +229,7 @@ contains_only_record(Expected) ->
         fun
             ([]) ->
                 error(no_records);
-            ([{_Topic, _Partition, _Message = #{key := Key}}]) when Key =:= Expected ->
+            ([#{key := Key}]) when Key =:= Expected ->
                 true;
             ([_ | _]) ->
                 false

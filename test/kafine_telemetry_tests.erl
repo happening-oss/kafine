@@ -216,7 +216,7 @@ span() ->
             {[worker, processing, start], Ref, #{monotonic_time := _, system_time := _}, #{
                 node_id := 101, telemetry_span_context := _
             }},
-                % node_id is updated; topic and partition are copied; telemetry_span_context is preserved; worker_vsn is added.
+            % node_id is updated; topic and partition are copied; telemetry_span_context is preserved; worker_vsn is added.
             {[worker, processing, stop], Ref, #{monotonic_time := _, duration := _}, #{
                 node_id := 102,
                 topic := _,

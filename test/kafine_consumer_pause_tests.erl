@@ -31,11 +31,9 @@ setup() ->
 
     meck:new(test_consumer_callback, [non_strict]),
     meck:expect(test_consumer_callback, init, fun(_T, _P, _O) -> {ok, ?CALLBACK_STATE} end),
-    meck:expect(test_consumer_callback, begin_record_batch, fun(_T, _P, _O, _Info, St) ->
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, _PD, St) ->
         {ok, St}
     end),
-    meck:expect(test_consumer_callback, handle_record, fun(_T, _P, _M, St) -> {ok, St} end),
-    meck:expect(test_consumer_callback, end_record_batch, fun(_T, _P, _N, _Info, St) -> {ok, St} end),
     ok.
 
 cleanup(_) ->
@@ -93,15 +91,21 @@ pause() ->
 
     set_initial_offsets(10, 12),
 
+    TelemetryRef = telemetry_test:attach_event_handlers(self(), [
+        [kafine, parallel_handler, pause]
+    ]),
+
     TopicName = ?TOPIC_NAME,
 
     % Pretend that there are some messages.
     kafine_kamock:produce(0, 14),
 
     % Pause one of the partitions when it gets to a particular offset.
-    meck:expect(test_consumer_callback, handle_record, fun
-        (_T, _P = ?PARTITION_1, _M = #{offset := 11}, St) -> {pause, St};
-        (_T, _P, _M, St) -> {ok, St}
+    meck:expect(test_consumer_callback, handle_partition_data, fun
+        (_T, _P = ?PARTITION_1, PartitionData, St) ->
+            pause_at_offset(11, PartitionData, St);
+        (_T, _P, _M, St) ->
+            {ok, St}
     end),
 
     {ok, Sup} = start_consumer(?CONSUMER_REF, Broker, TopicName, ?TOPIC_OPTIONS),
@@ -109,18 +113,30 @@ pause() ->
         not_used, #{TopicName => [?PARTITION_1, ?PARTITION_2]}, ?CONSUMER_REF
     ),
 
+    ?assertReceived(
+        {[kafine, parallel_handler, pause], TelemetryRef, _, #{
+            topic := TopicName, partition := ?PARTITION_1
+        }}
+    ),
+
     % Wait until we've caught up.
-    meck:wait(
+    ?assertWait(
+        4,
         test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_1, 12, '_', '_'],
+        handle_partition_data,
+        '_',
         ?WAIT_TIMEOUT_MS
     ),
-    meck:wait(
-        test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_2, 14, '_', '_'],
-        ?WAIT_TIMEOUT_MS
+
+    % should be two handlers, one paused
+    #{children := Children} = kafine_parallel_subscription_impl:info(?CONSUMER_REF),
+    ?assertEqual(2, maps:size(Children)),
+    ?assertMatch(
+        #{
+            ?PARTITION_1 := #{status := paused, next_offset := 12},
+            ?PARTITION_2 := #{status := active, next_offset := 14}
+        },
+        info_by_partition(Children)
     ),
 
     % We should see fetches to both partitions.
@@ -134,10 +150,10 @@ pause() ->
     kafine_kamock:produce(0, 18),
 
     % First partition is paused; wait until second partition catches up.
-    meck:wait(
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_2, 18, '_', '_'],
+        handle_partition_data,
+        ['_', ?PARTITION_2, meck:is(has_next_offset(18)), '_'],
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -162,9 +178,8 @@ pause_all() ->
     kafine_kamock:produce(0, 14),
 
     % Pause both of the partitions when they get to a particular offset.
-    meck:expect(test_consumer_callback, handle_record, fun
-        (_T, _P, _M = #{offset := 13}, St) -> {pause, St};
-        (_T, _P, _M, St) -> {ok, St}
+    meck:expect(test_consumer_callback, handle_partition_data, fun(_T, _P, PartitionData, St) ->
+        pause_at_offset(13, PartitionData, St)
     end),
 
     {ok, Sup} = start_consumer(?CONSUMER_REF, Broker, TopicName, ?TOPIC_OPTIONS),
@@ -173,16 +188,16 @@ pause_all() ->
     ),
 
     % Wait until we've caught up.
-    meck:wait(
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_1, 14, '_', '_'],
+        handle_partition_data,
+        ['_', ?PARTITION_1, meck:is(has_next_offset(14)), '_'],
         ?WAIT_TIMEOUT_MS
     ),
-    meck:wait(
+    ?assertWait(
         test_consumer_callback,
-        end_record_batch,
-        ['_', ?PARTITION_2, 14, '_', '_'],
+        handle_partition_data,
+        ['_', ?PARTITION_2, meck:is(has_next_offset(14)), '_'],
         ?WAIT_TIMEOUT_MS
     ),
 
@@ -243,7 +258,7 @@ start_consumer(Ref, Broker, TopicName, TopicOptions) ->
         ?FETCHER_METADATA,
         [
             coordinator(Ref, [TopicName]),
-            parallel_callback(Ref, TopicOptions)
+            parallel_callback(Ref, TopicOptions, ?FETCHER_METADATA)
         ]
     ).
 
@@ -270,7 +285,7 @@ coordinator(Ref, Topics) ->
         modules => [kafine_coordinator]
     }.
 
-parallel_callback(Ref, TopicOptions) ->
+parallel_callback(Ref, TopicOptions, Metadata) ->
     Options = kafine_parallel_subscription_callback:validate_options(
         #{
             topic_options => TopicOptions,
@@ -281,7 +296,7 @@ parallel_callback(Ref, TopicOptions) ->
 
     #{
         id => kafine_parallel_subscription,
-        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options]},
+        start => {kafine_parallel_subscription_impl, start_link, [Ref, Options, Metadata]},
         restart => permanent,
         shutdown => 5000,
         type => supervisor,
@@ -300,3 +315,30 @@ fetch_request_history() ->
             meck:history(kamock_partition_data)
         ),
     maps:groups_from_list(fun({P, _}) -> P end, fun({_, O}) -> O end, TopicOffsets).
+
+info_by_partition(Children) ->
+    maps:fold(fun(_, Info = #{partition := P}, M) -> M#{P => Info} end, #{}, Children).
+
+pause_at_offset(ExpectedOffset, PartitionData, State) ->
+    case
+        kafine_partition_data:reduce_while(
+            fun
+                (#{offset := Offset}, {_, Acc}) when
+                    Offset =:= ExpectedOffset
+                ->
+                    {halt, {paused, Acc}};
+                (_, {_, Acc}) ->
+                    {cont, {active, Acc}}
+            end,
+            {active, State},
+            PartitionData
+        )
+    of
+        {{active, NextState}, _NextOffset} -> {ok, NextState};
+        {{paused, NextState}, NextOffset} -> {pause, NextOffset, NextState}
+    end.
+
+has_next_offset(ExpectedNextOffset) ->
+    fun(PartitionData) ->
+        kafine_partition_data:next_offset(PartitionData) =:= ExpectedNextOffset
+    end.

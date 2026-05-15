@@ -34,10 +34,7 @@ setup() ->
     % We'll forward to the range assignor, but we want to make sure that we actually pay attention to the configuration.
     meck:new(test_assignor, [non_strict]),
     meck:expect(test_assignor, name, fun() -> <<"test">> end),
-    meck:expect(test_assignor, metadata, fun(Topics) -> kafine_range_assignor:metadata(Topics) end),
-    meck:expect(test_assignor, assign, fun(Members, TopicPartitions, AssignmentUserData) ->
-        kafine_range_assignor:assign(Members, TopicPartitions, AssignmentUserData)
-    end),
+    meck:expect(test_assignor, assign, fun kafine_range_assignor:assign/3),
 
     meck:new(kafine_range_assignor, [passthrough]),
 

@@ -1,7 +1,6 @@
 -module(group_consumer_offset_SUITE).
--compile([export_all, nowarn_export_all]).
+-export([all/0, suite/0, resume_offset/1]).
 -include_lib("eunit/include/eunit.hrl").
--include_lib("kafcod/include/error_code.hrl").
 
 all() ->
     [
@@ -55,15 +54,17 @@ resume_offset(_Config) ->
     CommittedOffset = 10,
     MembershipRef = setup_committed_offsets,
     MembershipOptions = kafine_membership_options:validate_options(#{
-        subscription_callback => {do_nothing_subscription_callback, []},
-        assignment_callback => {do_nothing_assignment_callback, []}
+        subscription_callback => {kafine_noop_subscription_callback, []},
+        assignment_callback => {kafine_noop_assignment_callback, []}
     }),
     {ok, B} = kafine_bootstrap:start_link(MembershipRef, Bootstrap, #{}),
     {ok, M} = kafine_metadata_cache:start_link(MembershipRef),
     {ok, C} = kafine_coordinator:start_link(
         MembershipRef, GroupId, [TopicName], #{}, MembershipOptions
     ),
-    {ok, R} = kafine_eager_rebalance:start_link(MembershipRef, [TopicName], GroupId, MembershipOptions),
+    {ok, R} = kafine_eager_rebalance:start_link(
+        MembershipRef, [TopicName], GroupId, MembershipOptions
+    ),
 
     % Wait for leader assignment so that we know we found the coordinator
     receive
@@ -95,7 +96,7 @@ resume_offset(_Config) ->
         Bootstrap,
         #{},
         GroupId,
-        #{assignment_callback => {do_nothing_assignment_callback, undefined}},
+        #{assignment_callback => {kafine_noop_assignment_callback, undefined}},
         #{},
         #{
             callback_mod => topic_consumer_callback,
@@ -116,7 +117,7 @@ resume_offset(_Config) ->
         records_received(),
         % The lowest offset should be the expected first offset, and we should see at least the expected number of
         % records.
-        eventually:match(fun(Records = [{_Topic, _Partition, #{offset := Offset}} | _]) ->
+        eventually:match(fun(Records = [#{offset := Offset} | _]) ->
             Offset == ExpectedFirstOffset andalso length(Records) >= ExpectedCount
         end)
     ),
@@ -139,25 +140,13 @@ records_received() ->
     eventually:probe(
         fun Receive(Acc) ->
             receive
-                {handle_record, R} ->
-                    Receive([R | Acc])
+                {handle_partition_data, {_T, _P, PD}} ->
+                    {Records, _} = kafine_partition_data:flatten(PD),
+                    Receive(Acc ++ Records)
             after 0 ->
-                lists:reverse(Acc)
+                Acc
             end
         end,
         [],
         records_received
-    ).
-
-contains_record(Expected) ->
-    eventually:match(
-        fun(Acc) ->
-            lists:any(
-                fun({_Topic, _Partition, _Message = #{key := Key}}) ->
-                    Key =:= Expected
-                end,
-                Acc
-            )
-        end,
-        {contains_record, Expected}
     ).

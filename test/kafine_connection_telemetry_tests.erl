@@ -11,7 +11,7 @@ all_test_() ->
     [
         fun call_api_versions/0,
         fun request_api_versions/0,
-        fun call_metadata_without_metadata/0
+        fun call_metadata_without_event_metadata/0
     ].
 
 call_api_versions() ->
@@ -165,7 +165,7 @@ request_api_versions() ->
     telemetry:detach(TelemetryRef),
     ok.
 
-call_metadata_without_metadata() ->
+call_metadata_without_event_metadata() ->
     TelemetryRef = attach_event_handlers(),
 
     {ok, Broker} = kamock_broker:start(?BROKER_REF),
@@ -175,13 +175,57 @@ call_metadata_without_metadata() ->
         {ok, #{cluster_id := _, brokers := _, controller_id := _, topics := _}},
         kafine_connection:call(
             C,
-            fun metadata_request:encode_metadata_request_5/1,
+            fun metadata_request:encode_metadata_request_9/1,
             #{
                 allow_auto_topic_creation => false,
+                include_cluster_authorized_operations => false,
+                include_topic_authorized_operations => false,
                 topics => []
             },
-            fun metadata_response:decode_metadata_response_5/1
+            fun metadata_response:decode_metadata_response_9/1
+            % Note the absence of extra event metadata here.
         )
+    ),
+
+    % Did we get enough information from the telemetry event?
+    ?assertMatch(
+        [
+            {
+                [kafine, connection, call, start],
+                TelemetryRef,
+                #{monotonic_time := _, system_time := _},
+                #{
+                    % These are standard telemetry measurements.
+                    telemetry_span_context := _,
+                    % We didn't pass any extra event metadata.
+                    % kafine_connection adds these.
+                    host := _,
+                    port := _,
+                    node_id := 101
+                }
+            },
+            {
+                [kafine, connection, call, stop],
+                TelemetryRef,
+                #{
+                    % These are standard telemetry measurements for stop events.
+                    monotonic_time := _,
+                    duration := _,
+                    % We didn't pass any extra event metadata.
+                    % kafine_connection adds this.
+                    response := _
+                },
+                #{
+                    % These are standard telemetry measurements.
+                    telemetry_span_context := _,
+                    % kafine_connection adds these.
+                    host := _,
+                    port := _,
+                    node_id := 101
+                }
+            }
+        ],
+        flush()
     ),
 
     kafine_connection:stop(C),

@@ -5,7 +5,7 @@
 -behaviour(gen_server).
 
 -export([
-    start_link/2,
+    start_link/4,
 
     whereis/1,
     info/1
@@ -26,13 +26,12 @@
 
 -export([
     set_node_fetcher/3,
-    request_job/3,
-    complete_job/4
+    request_job/3
 ]).
 
--export_type([job_id/0]).
-
 -include_lib("kernel/include/logger.hrl").
+-include_lib("kafcod/include/error_code.hrl").
+-include("../kafine_eqwalizer.hrl").
 
 -type ref() :: term().
 
@@ -101,22 +100,6 @@ set_node_fetcher(RefOrPid, Broker, NodeFetcher) ->
 request_job(RefOrPid, NodeId, From) ->
     cast(RefOrPid, {request_job, NodeId, From}).
 
--type topic_partition_result() ::
-    completed
-    | repeat
-    | {update_offset, kafine:offset() | kafine:offset_timestamp()}
-    | give_away.
-
--spec complete_job(
-    RefOrPid :: ref() | pid(),
-    JobId :: job_id(),
-    NodeId :: kafine:node_id(),
-    TopicPartitionResults :: kafine_topic_partition_data:t(topic_partition_result())
-) -> ok.
-
-complete_job(RefOrPid, JobId, NodeId, TopicPartitionResults) ->
-    cast(RefOrPid, {complete_job, JobId, NodeId, TopicPartitionResults}).
-
 -spec call(RefOrPid :: ref() | pid(), Request :: term()) -> dynamic().
 
 call(Pid, Request) when is_pid(Pid) ->
@@ -131,10 +114,17 @@ cast(Pid, Request) when is_pid(Pid) ->
 cast(Ref, Request) ->
     gen_server:cast(via(Ref), Request).
 
--spec start_link(Ref :: ref(), Metadata :: telemetry:event_metadata()) -> gen_server:start_ret().
+-spec start_link(
+    Ref :: ref(),
+    ConsumerOptions :: kafine:consumer_options(),
+    TopicOptions :: #{kafine:topic() => kafine:topic_options()},
+    Metadata :: telemetry:event_metadata()
+) -> gen_server:start_ret().
 
-start_link(Ref, Metadata) ->
-    gen_server:start_link(via(Ref), ?MODULE, [Ref, Metadata], start_options()).
+start_link(Ref, ConsumerOptions, TopicOptions, Metadata) ->
+    gen_server:start_link(
+        via(Ref), ?MODULE, [Ref, ConsumerOptions, TopicOptions, Metadata], start_options()
+    ).
 
 start_options() ->
     [{debug, kafine_trace:debug_options(#{mfa => {?MODULE, handle_event, 4}})}].
@@ -145,13 +135,21 @@ start_options() ->
     CallbackArgs :: term()
 }.
 
+-type backoff_state() :: kafine_backoff:state() | undefined.
+
 -type topic_partition_state() ::
-    init | paused | {ready, fetch_request()} | {busy, job_id(), fetch_request()}.
+    init
+    | paused
+    | {ready, fetch_request(), backoff_state()}
+    | {busy, job_id(), fetch_request(), backoff_state()}
+    | {backoff, fetch_request(), backoff_state()}.
 
 -type job_id() :: pos_integer().
 
 -record(state, {
     ref :: ref(),
+    consumer_options :: kafine:consumer_options(),
+    topic_options :: #{kafine:topic() => kafine:topic_options()},
     metadata :: telemetry:event_metadata(),
     brokers = #{} :: #{kafine:broker() => pid()},
     topic_partitions = kafine_topic_partitions:new() :: kafine_topic_partitions:t(),
@@ -163,17 +161,22 @@ start_options() ->
     topic_partition_states = kafine_topic_partition_data:new() :: kafine_topic_partition_data:t(
         topic_partition_state()
     ),
-    next_job_id = 1 :: job_id(),
-    job_assignments = #{} :: #{pid() => job_id()}
+    job_req_ids = kafine_node_fetcher:reqids_new() :: kafine_node_fetcher:request_id_collection(),
+    next_job_id = 1 :: job_id()
 }).
 
 -type state() :: #state{}.
 
-init([Ref, Metadata]) ->
+init([Ref, ConsumerOptions, TopicOptions, Metadata]) ->
     Metadata2 = Metadata#{ref => Ref},
     logger:set_process_metadata(Metadata2),
     kafine_proc_lib:set_label({?MODULE, Ref}),
-    State = #state{ref = Ref, metadata = Metadata2},
+    State = #state{
+        ref = Ref,
+        consumer_options = ConsumerOptions,
+        topic_options = TopicOptions,
+        metadata = Metadata2
+    },
     {ok, State}.
 
 -spec handle_call(
@@ -194,11 +197,23 @@ handle_call(
         next_job_id = NextJobId
     }
 ) ->
+    TopicPartitionStates2 = maps:map(
+        fun(_T, Ps) ->
+            maps:map(
+                fun
+                    (_P, St) when is_atom(St) -> St;
+                    (_P, St) when is_tuple(St) -> element(1, St)
+                end,
+                Ps
+            )
+        end,
+        TopicPartitionStates
+    ),
     Info = #{
         brokers => Brokers,
         topic_partition_nodes => TopicPartitionNodes,
         pending_job_requests => maps:keys(PendingJobRequests),
-        topic_partition_states => TopicPartitionStates,
+        topic_partition_states => TopicPartitionStates2,
         next_job_id => NextJobId
     },
     {reply, Info, State};
@@ -242,9 +257,7 @@ handle_call(
         {fetch, kafine:topic(), kafine:partition(), fetch_request()}
         | {pause, kafine:topic(), kafine:partition()}
         | {set_node_fetcher, kafine:broker(), pid()}
-        | {request_job, kafine:node_id(), pid()}
-        | {complete_job, job_id(), kafine:node_id(),
-            kafine_topic_partition_data:t(topic_partition_result())},
+        | {request_job, kafine:node_id(), pid()},
     State :: state()
 ) ->
     {noreply, state()}.
@@ -265,10 +278,10 @@ handle_cast(
             {noreply, State};
         NodeId ->
             NewTopicPartitionStates = kafine_topic_partition_data:put(
-                Topic, Partition, {ready, FetchRequest}, TopicPartitionStates
+                Topic, Partition, {ready, FetchRequest, undefined}, TopicPartitionStates
             ),
             State1 = State#state{topic_partition_states = NewTopicPartitionStates},
-            case maybe_fulfil_job(NodeId, State1) of
+            case maybe_fulfil_job(NodeId, true, State1) of
                 false ->
                     {noreply, State1};
                 {true, State2} ->
@@ -295,7 +308,7 @@ handle_cast(
                 Topic, Partition, paused, TopicPartitionStates
             ),
             State1 = State#state{topic_partition_states = NewTopicPartitionStates},
-            case maybe_fulfil_job(NodeId, State1) of
+            case maybe_fulfil_job(NodeId, true, State1) of
                 false ->
                     {noreply, State1};
                 {true, State2} ->
@@ -325,7 +338,6 @@ handle_cast(
             _OldPid ->
                 % Node fetcher has been restarted, save the new pid
                 ?LOG_DEBUG("Monitoring new node fetcher ~p for node ~p", [Pid, NodeId]),
-                monitor(process, Pid),
                 maps:put(Broker, Pid, Brokers)
         end,
     {noreply, State#state{brokers = NewBrokers}};
@@ -338,7 +350,7 @@ handle_cast(
 ) ->
     NewPendingJobRequests = PendingJobRequests#{NodeId => From},
     State1 = State#state{pending_job_requests = NewPendingJobRequests},
-    case maybe_fulfil_job(NodeId, State1) of
+    case maybe_fulfil_job(NodeId, true, State1) of
         false ->
             ?LOG_DEBUG("Waiting for requests for node ~p", [NodeId]),
             telemetry:execute(
@@ -350,11 +362,81 @@ handle_cast(
         {true, State2} ->
             ?LOG_DEBUG("Immediately fulfilled job request from node ~p", [NodeId]),
             {noreply, State2}
+    end.
+
+handle_info(
+    {backoff_complete, Topic, Partition},
+    State = #state{topic_partition_states = TopicPartitionStates}
+) ->
+    case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionStates, undefined) of
+        {backoff, Request, BackoffState} ->
+            ?LOG_DEBUG("Backoff complete for ~s/~p, marking as ready", [Topic, Partition]),
+            NewTopicPartitionStates = kafine_topic_partition_data:put(
+                Topic, Partition, {ready, Request, BackoffState}, TopicPartitionStates
+            ),
+            State1 = State#state{topic_partition_states = NewTopicPartitionStates},
+            State2 = handle_backoffs_complete(Topic, Partition, State1),
+            {noreply, State2};
+        _Other ->
+            % State has changed since we initiated the backoff, ignore
+            ?LOG_DEBUG("Backoff complete for ~s/~p but state has changed, ignoring", [
+                Topic, Partition
+            ]),
+            {noreply, State}
     end;
-handle_cast(
-    {complete_job, JobId, NodeId, TopicPartitionResults},
+handle_info(Msg, State = #state{job_req_ids = ReqIds}) ->
+    case kafine_node_fetcher:check_response(Msg, ReqIds) of
+        {{reply, {ok, TopicPartitionResults}}, {JobId, NodeId}, NewReqIds} ->
+            NewState = complete_job(
+                ?DYNAMIC_CAST(JobId),
+                ?DYNAMIC_CAST(NodeId),
+                TopicPartitionResults,
+                State#state{job_req_ids = NewReqIds}
+            ),
+            {noreply, NewState};
+        {{reply, {error, Reason}}, {JobId, NodeId}, NewReqIds} ->
+            ?LOG_INFO("Job ~p failed with reason ~p", [JobId, Reason]),
+            NewState = abort_job(JobId, NodeId, State#state{job_req_ids = NewReqIds}),
+            {noreply, NewState};
+        {{error, {Reason, _}}, {JobId, NodeId}, NewReqIds} ->
+            ?LOG_INFO("Job ~p failed with reason ~p", [JobId, Reason]),
+            NewState = abort_job(JobId, NodeId, State#state{job_req_ids = NewReqIds}),
+            {noreply, NewState};
+        _Other ->
+            ?LOG_WARNING("Unexpected info: ~p", [Msg]),
+            {noreply, State}
+    end.
+
+handle_backoffs_complete(
+    Topic, Partition, State = #state{topic_partition_nodes = TopicPartitionNodes}
+) ->
+    case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionNodes, undefined) of
+        undefined ->
+            State;
+        NodeId ->
+            case maybe_fulfil_job(NodeId, false, State) of
+                {true, NewState} -> NewState;
+                false -> State
+            end
+    end.
+
+-spec complete_job(
+    JobId :: job_id(),
+    NodeId :: kafine:node_id(),
+    TopicPartitionResults ::
+        kafine_topic_partition_data:t(kafine_fetch:partition_result())
+        | kafine_topic_partition_data:t(kafine_list_offsets:partition_result()),
+    State :: state()
+) -> state().
+
+complete_job(
+    JobId,
+    NodeId,
+    TopicPartitionResults,
     State = #state{
         ref = Ref,
+        consumer_options = #{retry_backoff := RetryBackoff},
+        topic_options = TopicOptions,
         topic_partitions = TopicPartitions,
         topic_partition_nodes = TopicPartitionNodes,
         topic_partition_states = TopicPartitionStates
@@ -374,7 +456,9 @@ handle_cast(
                     % We leave the state alone, it'll be updated when the handler fetches
                     % again or pauses
                     false;
-                (Topic, Partition, {update_offset, NewOffset}) ->
+                (Topic, Partition, Result) ->
+                    % This is the result of a successful list_offsets call. Update the offset
+                    % and mark the partition as ready to fetch.
                     case
                         kafine_topic_partition_data:get(
                             Topic, Partition, TopicPartitionStates, undefined
@@ -383,25 +467,27 @@ handle_cast(
                         undefined ->
                             % Not following this topic/partition any more, ignore
                             false;
-                        {busy, JobId, {_, CallbackMod, CallbackArg}} ->
-                            % Update the offset and mark as not busy
-                            {true, {ready, {NewOffset, CallbackMod, CallbackArg}}};
-                        _Other ->
-                            % Must have been superseded, ignore
-                            false
-                    end;
-                (Topic, Partition, Result) when Result =:= repeat orelse Result =:= give_away ->
-                    case
-                        kafine_topic_partition_data:get(
-                            Topic, Partition, TopicPartitionStates, undefined
-                        )
-                    of
-                        undefined ->
-                            % Not following this topic/partition any more, ignore
-                            false;
-                        {busy, JobId, Request} ->
-                            % Return this topic/partition from busy to ready
-                            {true, {ready, Request}};
+                        {busy, JobId, Request, BackoffState} ->
+                            case
+                                handle_result(
+                                    Topic,
+                                    Partition,
+                                    Result,
+                                    Request,
+                                    BackoffState,
+                                    RetryBackoff,
+                                    TopicOptions
+                                )
+                            of
+                                {ok, NewState} ->
+                                    {true, NewState};
+                                {error, {kafka_error, ErrorCode}} ->
+                                    ?LOG_ERROR(
+                                        "Job for ~s/~B failed with non-retryable error ~B",
+                                        [Topic, Partition, ErrorCode]
+                                    ),
+                                    exit({kafka_error, ErrorCode})
+                            end;
                         _Other ->
                             % Must have been superseded, ignore
                             false
@@ -412,14 +498,14 @@ handle_cast(
     % If any topic/partition was part of this job, but isn't in the results, mark it as not busy
     TopicPartitionStateUpdates2 = kafine_topic_partition_data:filtermap(
         fun
-            (Topic, Partition, {busy, J, Request}) when J =:= JobId ->
+            (Topic, Partition, {busy, J, Request, BackoffState}) when J =:= JobId ->
                 case kafine_topic_partition_data:is_key(Topic, Partition, TopicPartitionResults) of
                     true ->
                         % Result already handled above
                         false;
                     false ->
                         % Mark as not busy
-                        {true, {ready, Request}}
+                        {true, {ready, Request, BackoffState}}
                 end;
             (_Topic, _Partition, _Other) ->
                 false
@@ -437,7 +523,7 @@ handle_cast(
     UpdateNodeMappingsRequired =
         kafine_topic_partition_data:any(
             fun(Topic, Partition, Result) ->
-                give_away =:= Result andalso
+                Result =:= {error, {kafka_error, ?NOT_LEADER_OR_FOLLOWER}} andalso
                     NodeId =:=
                         kafine_topic_partition_data:get(
                             Topic, Partition, TopicPartitionNodes, undefined
@@ -455,47 +541,81 @@ handle_cast(
                 State1
         end,
     % Doing a give away or updating node mappings may mean we can fulfil pending job requests
-    State3 = maybe_fulfil_jobs(State2),
-    {noreply, State3}.
+    maybe_fulfil_jobs(State2).
 
-handle_info(
-    {'DOWN', _Ref, process, Pid, _Reason},
+handle_result(
+    Topic,
+    Partition,
+    Result,
+    Request = {_, CallbackMod, CallbackArg},
+    BackoffState,
+    RetryBackoff,
+    TopicOptions
+) ->
+    case Result of
+        repeat ->
+            {ok, {ready, Request, undefined}};
+        {update_offset, NewOffset} ->
+            {ok, {ready, {NewOffset, CallbackMod, CallbackArg}, undefined}};
+        {error, {kafka_error, ?OFFSET_OUT_OF_RANGE}} ->
+            #{offset_reset_policy := ResetPolicy} = maps:get(
+                Topic, TopicOptions
+            ),
+            {ok, {ready, {ResetPolicy, CallbackMod, CallbackArg}, undefined}};
+        {error, {kafka_error, ?NOT_LEADER_OR_FOLLOWER}} ->
+            % We don't back off this this - instead we look up the new broker then retry
+            % immediately. We preserve the backoff state in case something complicated is happening
+            % on the kafka cluster that results in an immediate error
+            {ok, {ready, Request, BackoffState}};
+        {error, {kafka_error, ErrorCode}} ->
+            case kafcod_error:is_retriable(ErrorCode) of
+                true ->
+                    case handle_backoff(BackoffState, RetryBackoff) of
+                        {DelayMs, NewBackoffState} ->
+                            erlang:send_after(
+                                DelayMs, self(), {backoff_complete, Topic, Partition}
+                            ),
+                            {ok, {backoff, Request, NewBackoffState}};
+                        limit_exceeded ->
+                            {error, {kafka_error, ErrorCode}}
+                    end;
+                false ->
+                    {error, {kafka_error, ErrorCode}}
+            end
+    end.
+
+handle_backoff(undefined, RetryBackoff) ->
+    BackoffState = kafine_backoff:init(RetryBackoff),
+    handle_backoff(BackoffState, RetryBackoff);
+handle_backoff(BackoffState, _RetryBackoff) ->
+    kafine_backoff:backoff(BackoffState).
+
+abort_job(
+    JobId,
+    NodeId,
     State = #state{
         ref = Ref,
-        topic_partition_states = TopicPartitionStates,
-        job_assignments = JobAssignments
+        topic_partition_states = TopicPartitionStates
     }
 ) ->
-    case maps:take(Pid, JobAssignments) of
-        error ->
-            ?LOG_DEBUG("Ignoring DOWN for ~p - no associated jobs", [Pid]),
-            {noreply, State};
-        {JobId, NewJobAssignments} ->
-            ?LOG_DEBUG("Job ~p aborted due to node exit", [JobId]),
-            telemetry:execute(
-                [kafine, fetcher, job_aborted],
-                #{},
-                #{ref => Ref, job_id => JobId}
-            ),
-            NewTopicPartitionStates = kafine_topic_partition_data:map(
-                fun
-                    (_Topic, _Partition, {busy, J, Request}) when J =:= JobId ->
-                        % Mark as not busy
-                        {ready, Request};
-                    (_Topic, _Partition, TopicPartitionState) ->
-                        TopicPartitionState
-                end,
-                TopicPartitionStates
-            ),
-            NewState = State#state{
-                topic_partition_states = NewTopicPartitionStates,
-                job_assignments = NewJobAssignments
-            },
-            {noreply, NewState}
-    end;
-handle_info(Info, State) ->
-    ?LOG_WARNING("Unexpected info: ~p", [Info]),
-    {noreply, State}.
+    telemetry:execute(
+        [kafine, fetcher, job_aborted],
+        #{},
+        #{ref => Ref, job_id => JobId, node_id => NodeId}
+    ),
+    NewTopicPartitionStates = kafine_topic_partition_data:map(
+        fun
+            (_Topic, _Partition, {busy, J, Request, BackoffState}) when J =:= JobId ->
+                % Mark as not busy
+                {ready, Request, BackoffState};
+            (_Topic, _Partition, TopicPartitionState) ->
+                TopicPartitionState
+        end,
+        TopicPartitionStates
+    ),
+    State#state{
+        topic_partition_states = NewTopicPartitionStates
+    }.
 
 -spec update_node_mappings(TopicPartitions :: kafine_topic_partitions:t(), state()) -> state().
 
@@ -568,10 +688,8 @@ update_node_mappings(
 
     Brokers1 =
         lists:foldl(
-            fun(Broker = #{node_id := NodeId}, BrokersAcc) ->
+            fun(Broker, BrokersAcc) ->
                 {ok, Pid} = kafine_node_fetcher_sup:start_child(Ref, self(), Broker, Metadata),
-                ?LOG_DEBUG("Monitoring new node fetcher ~p for node ~p", [Pid, NodeId]),
-                monitor(process, Pid),
                 maps:put(Broker, Pid, BrokersAcc)
             end,
             Brokers0,
@@ -601,15 +719,10 @@ get_job_for_offset(Offset) when is_number(Offset) andalso Offset >= 0 ->
 get_job_for_offset(_Offset) ->
     list_offsets.
 
--spec find_and_dispatch_job(
-    Target :: pid(), TopicPartitions :: kafine_topic_partitions:t(), State :: state()
-) ->
-    {true, NewState :: state()} | false.
-
 maybe_fulfil_jobs(State = #state{pending_job_requests = PendingJobRequests}) ->
     maps:fold(
         fun(NodeId, _Pid, StateAcc) ->
-            case maybe_fulfil_job(NodeId, StateAcc) of
+            case maybe_fulfil_job(NodeId, true, StateAcc) of
                 false -> StateAcc;
                 {true, NewState} -> NewState
             end
@@ -620,6 +733,7 @@ maybe_fulfil_jobs(State = #state{pending_job_requests = PendingJobRequests}) ->
 
 maybe_fulfil_job(
     NodeId,
+    SkipBackoffPartitions,
     State = #state{
         pending_job_requests = PendingJobRequests,
         node_topic_partitions = NodeTopicPartitions
@@ -628,9 +742,11 @@ maybe_fulfil_job(
     case maps:take(NodeId, PendingJobRequests) of
         error ->
             false;
-        {From, NewPendingJobRequests} ->
+        {Target, NewPendingJobRequests} ->
             TopicPartitions = maps:get(NodeId, NodeTopicPartitions, kafine_topic_partitions:new()),
-            case find_and_dispatch_job(From, TopicPartitions, State) of
+            case
+                find_and_dispatch_job(NodeId, Target, TopicPartitions, SkipBackoffPartitions, State)
+            of
                 false ->
                     false;
                 {true, NewState} ->
@@ -638,24 +754,37 @@ maybe_fulfil_job(
             end
     end.
 
-find_and_dispatch_job(Target, TopicPartitions, State) ->
-    case find_list_offsets_job(Target, TopicPartitions, State) of
+-spec find_and_dispatch_job(
+    NodeId :: kafine:node_id(),
+    Target :: pid(),
+    TopicPartitions :: kafine_topic_partitions:t(),
+    SkipBackoffPartitions :: boolean(),
+    State :: state()
+) ->
+    {true, NewState :: state()} | false.
+
+find_and_dispatch_job(NodeId, Target, TopicPartitions, SkipBackoffPartitions, State) ->
+    case find_list_offsets_job(NodeId, Target, TopicPartitions, SkipBackoffPartitions, State) of
         {true, NewState} ->
             {true, NewState};
         false ->
-            find_fetch_job(Target, TopicPartitions, State)
+            find_fetch_job(NodeId, Target, TopicPartitions, SkipBackoffPartitions, State)
     end.
 
 find_list_offsets_job(
-    Target, TopicPartitions, State = #state{topic_partition_states = TopicPartitionStates}
+    NodeId,
+    Target,
+    TopicPartitions,
+    SkipBackoffPartitions,
+    State = #state{topic_partition_states = TopicPartitionStates}
 ) ->
     maybe
-        true ?= has_list_offsets_job(TopicPartitions, TopicPartitionStates),
+        true ?= has_job(list_offsets, TopicPartitions, TopicPartitionStates, SkipBackoffPartitions),
         ListOffsetsBody =
             kafine_topic_partitions:filtermap(
                 fun(Topic, Partition) ->
                     case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionStates) of
-                        {ready, {Offset, _, _}} ->
+                        {ready, {Offset, _, _}, _} ->
                             case get_job_for_offset(Offset) of
                                 list_offsets ->
                                     {true, Offset};
@@ -668,115 +797,108 @@ find_list_offsets_job(
                 end,
                 TopicPartitions
             ),
-        NewState = dispatch_job(Target, list_offsets, ListOffsetsBody, State),
+        NewState = dispatch_job(NodeId, Target, list_offsets, ListOffsetsBody, State),
         {true, NewState}
     end.
 
--spec has_list_offsets_job(
-    TopicPartitions :: kafine_topic_partitions:t(),
-    TopicPartitionStates :: kafine_topic_partition_data:t(topic_partition_state())
-) -> boolean().
-
-has_list_offsets_job(TopicPartitions, TopicPartitionStates) ->
-    Iterator = maps:iterator(TopicPartitions),
-    has_list_offsets_job_1(maps:next(Iterator), TopicPartitionStates, false).
-
-has_list_offsets_job_1(none, _TopicPartitionStates, HasListOffsets) ->
-    HasListOffsets;
-has_list_offsets_job_1({Topic, Partitions, Next}, TopicPartitionStates, HasListOffsets) ->
-    case has_list_offsets_job_2(Topic, Partitions, TopicPartitionStates, false) of
-        {true, HasListOffsets2} ->
-            has_list_offsets_job_1(
-                maps:next(Next), TopicPartitionStates, HasListOffsets or HasListOffsets2
-            );
-        false ->
-            false
-    end.
-
-has_list_offsets_job_2(_Topic, [], _TopicPartitionStates, HasListOffsets) ->
-    {true, HasListOffsets};
-has_list_offsets_job_2(Topic, [Partition | Rest], TopicPartitionStates, HasListOffsets) ->
-    case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionStates) of
-        init ->
-            false;
-        {ready, {Offset, _, _}} ->
-            HasListOffsets2 = HasListOffsets orelse get_job_for_offset(Offset) =:= list_offsets,
-            has_list_offsets_job_2(Topic, Rest, TopicPartitionStates, HasListOffsets2);
-        _ ->
-            has_list_offsets_job_2(Topic, Rest, TopicPartitionStates, HasListOffsets)
-    end.
-
 find_fetch_job(
-    Target, TopicPartitions, State = #state{topic_partition_states = TopicPartitionStates}
+    NodeId,
+    Target,
+    TopicPartitions,
+    SkipBackoffPartitions,
+    State = #state{topic_partition_states = TopicPartitionStates}
 ) ->
     maybe
         % Need all the topic partitions to have ready fetches, or be paused.
         % If we don't do this, we might only fetch from quiet partitions, which could significantly
         % delay fetching from busy partitions.
-        true ?= has_fetch_job(TopicPartitions, TopicPartitionStates),
+        true ?= has_job(fetch, TopicPartitions, TopicPartitionStates, SkipBackoffPartitions),
         FetchBody = kafine_topic_partitions:filtermap(
             fun(Topic, Partition) ->
                 case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionStates) of
-                    {ready, Request} ->
+                    {ready, Request, _} ->
                         {true, Request};
-                    paused ->
+                    _ ->
                         false
                 end
             end,
             TopicPartitions
         ),
-        NewState = dispatch_job(Target, fetch, FetchBody, State),
+        NewState = dispatch_job(NodeId, Target, fetch, FetchBody, State),
         {true, NewState}
     end.
 
--spec has_fetch_job(
+-spec has_job(
+    JobType :: fetch | list_offsets,
     TopicPartitions :: kafine_topic_partitions:t(),
-    TopicPartitionStates :: kafine_topic_partition_data:t(topic_partition_state())
+    TopicPartitionStates :: kafine_topic_partition_data:t(topic_partition_state()),
+    SkipBackoffPartitions :: boolean()
 ) -> boolean().
 
-has_fetch_job(TopicPartitions, TopicPartitionStates) ->
-    Iterator = maps:iterator(TopicPartitions),
-    has_fetch_job_1(maps:next(Iterator), TopicPartitionStates, false).
-
-has_fetch_job_1(none, _TopicPartitionStates, HasFetch) ->
-    HasFetch;
-has_fetch_job_1({Topic, Partitions, Next}, TopicPartitionStates, HasFetch) ->
-    case has_fetch_job_2(Topic, Partitions, TopicPartitionStates, false) of
-        {true, HasFetch2} ->
-            has_fetch_job_1(maps:next(Next), TopicPartitionStates, HasFetch or HasFetch2);
-        false ->
-            false
-    end.
-
-has_fetch_job_2(_Topic, [], _TopicPartitionStates, HasFetch) ->
-    {true, HasFetch};
-has_fetch_job_2(Topic, [Partition | Rest], TopicPartitionStates, HasFetch) ->
-    case kafine_topic_partition_data:get(Topic, Partition, TopicPartitionStates) of
-        {ready, {Offset, _, _}} ->
-            HasFetch2 = HasFetch orelse get_job_for_offset(Offset) =:= fetch,
-            has_fetch_job_2(Topic, Rest, TopicPartitionStates, HasFetch2);
-        paused ->
-            has_fetch_job_2(Topic, Rest, TopicPartitionStates, HasFetch);
-        _ ->
-            false
-    end.
+has_job(JobType, TopicPartitions, TopicPartitionStates, SkipBackoffPartitions) ->
+    {_, Result} =
+        kafine_topic_partitions:reduce_while(
+            fun(Topic, Partition, HasJob) ->
+                case
+                    kafine_topic_partition_data:get(
+                        Topic, Partition, TopicPartitionStates, undefined
+                    )
+                of
+                    init ->
+                        % No fetch at all for this partition, don't make a job until one arrives
+                        {halt, false};
+                    {ready, {Offset, _, _}, _} ->
+                        % This partition is ready, is it of the correct job type?
+                        HasJob2 = HasJob orelse get_job_for_offset(Offset) =:= JobType,
+                        {cont, HasJob2};
+                    {busy, _, _, _} ->
+                        % We're waiting for a new fetch for this partition, don't request a job
+                        % until one arrives
+                        {halt, false};
+                    paused ->
+                        % This partition is paused, ignore it
+                        {cont, HasJob};
+                    {backoff, _, _} when SkipBackoffPartitions ->
+                        % This partition is backing off, proceed without it
+                        {cont, HasJob};
+                    {backoff, {Offset, _, _}, _} ->
+                        case get_job_for_offset(Offset) of
+                            JobType ->
+                                % This partition needs to be included in a job of the requested
+                                % type, but is backing off. We care about backoff partitions here,
+                                % so we can't send the job yet
+                                {halt, false};
+                            _ ->
+                                % Not the correct job type, not relevant
+                                {cont, HasJob}
+                        end;
+                    undefined ->
+                        % shouldn't happen
+                        {cont, HasJob}
+                end
+            end,
+            false,
+            TopicPartitions
+        ),
+    Result.
 
 dispatch_job(
+    NodeId,
     Target,
     JobType,
     JobBody,
     State = #state{
         next_job_id = JobId,
         topic_partition_states = TopicPartitionStates,
-        job_assignments = JobAssignments
+        job_req_ids = JobReqIds
     }
 ) ->
     NewTopicPartitionStates = kafine_topic_partition_data:map(
         fun
-            (Topic, Partition, TopicPartitionState = {ready, Request}) ->
+            (Topic, Partition, TopicPartitionState = {ready, Request, BackoffState}) ->
                 case kafine_topic_partition_data:is_key(Topic, Partition, JobBody) of
                     true ->
-                        {busy, JobId, Request};
+                        {busy, JobId, Request, BackoffState};
                     false ->
                         TopicPartitionState
                 end;
@@ -785,10 +907,10 @@ dispatch_job(
         end,
         TopicPartitionStates
     ),
-    Job = {JobId, JobType, JobBody},
-    kafine_node_fetcher:job(Target, Job),
+    Job = {JobType, JobBody},
+    NewJobReqIds = kafine_node_fetcher:job(Target, Job, {JobId, NodeId}, JobReqIds),
     State#state{
         next_job_id = JobId + 1,
         topic_partition_states = NewTopicPartitionStates,
-        job_assignments = JobAssignments#{Target => JobId}
+        job_req_ids = NewJobReqIds
     }.

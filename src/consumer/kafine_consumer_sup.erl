@@ -94,7 +94,8 @@ init([
                 type => supervisor,
                 modules => [kafine_fetcher_sup]
             }
-        ] ++ AdditionalChildSpecs,
+            | AdditionalChildSpecs
+        ],
     SupFlags = #{
         strategy => one_for_all,
         intensity => 1,

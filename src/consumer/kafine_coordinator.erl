@@ -20,7 +20,7 @@
     offset_fetch/3,
     offset_commit/6,
 
-    join_group/2,
+    join_group/3,
     sync_group/5,
     leave_group/2,
     heartbeat/3
@@ -184,16 +184,18 @@ offset_fetch(RefOrPid, TopicPartitions, ReqIds) ->
 offset_commit(RefOrPid, MemberId, GenerationId, Offsets, Label, ReqIds) ->
     send_request(RefOrPid, {offset_commit, MemberId, GenerationId, Offsets}, Label, ReqIds).
 
--spec join_group(RefOrPid :: ref() | pid(), MemberId :: binary()) -> req_ids().
-join_group(RefOrPid, MemberId) ->
-    send_request(RefOrPid, {join_group, MemberId}).
+-spec join_group(
+    RefOrPid :: ref() | pid(), MemberId :: binary(), OwnedPartitions :: kafine_topic_partitions:t()
+) -> req_ids().
+join_group(RefOrPid, MemberId, OwnedPartitions) ->
+    send_request(RefOrPid, {join_group, MemberId, OwnedPartitions}).
 
 -spec sync_group(
     RefOrPid :: ref() | pid(),
     MemberId :: binary(),
     GenerationId :: integer(),
     ProtocolName :: binary(),
-    Assignments :: #{binary() => kafine_topic_partitions:t()}
+    Assignments :: kafine_assignor:assignments()
 ) -> req_ids().
 sync_group(RefOrPid, MemberId, GenerationId, ProtocolName, Assignments) ->
     send_request(RefOrPid, {sync_group, MemberId, GenerationId, ProtocolName, Assignments}).
@@ -257,16 +259,15 @@ handle_event(
     Data = #data{
         ref = Ref,
         group_id = GroupId,
-        broker = LastBroker,
-        backoff_state = BackoffState
+        broker = LastBroker
     }
 ) when EventType =:= internal; EventType =:= state_timeout ->
     case kafine_bootstrap:find_coordinator(Ref, GroupId) of
-        {ok, NewBroker} when NewBroker =/= LastBroker ->
-            NewData = Data#data{
-                backoff_state = kafine_backoff:reset(BackoffState),
-                broker = NewBroker
-            },
+        {ok, NewBroker = #{node_id := NodeId, host := Host, port := Port}} when
+            NewBroker =/= LastBroker
+        ->
+            ?LOG_INFO("Coordinator broker found: node ~B @ ~s:~B", [NodeId, Host, Port]),
+            NewData = Data#data{broker = NewBroker},
             {next_state, disconnected, NewData, {next_event, internal, connect}};
         {ok, LastBroker} ->
             {next_state, disconnected, Data, {next_event, internal, connect}};
@@ -284,7 +285,7 @@ handle_event(
     Data = #data{
         ref = Ref,
         broker = Broker,
-        connections_options = ConnectionOptions,
+        connections_options = ConnectionOptions = #{backoff := BackoffConfig},
         group_id = GroupId,
         backoff_state = BackoffState
     }
@@ -298,24 +299,29 @@ handle_event(
             }),
             NewData = Data#data{
                 connection = Connection,
-                backoff_state = kafine_backoff:reset(BackoffState)
+                backoff_state = kafine_backoff:init(BackoffConfig)
             },
             {next_state, connected, NewData, {next_event, internal, process_pending}};
         {error, Reason} ->
-            ?LOG_WARNING("Failed to establish connection to broker: ~p", [Reason]),
-            {DelayMs, NewBackoffState} = kafine_backoff:backoff(BackoffState),
-            telemetry:execute(
-                [kafine, coordinator, backoff],
-                #{delay_ms => DelayMs},
-                #{ref => Ref, reason => Reason}
-            ),
-            % If we failed to connect the coordinator, we should retry find_coordinator. This avoids
-            % us looping forever if the cluster moves the coordinator after we queried it.
-            NewData = Data#data{
-                backoff_state = NewBackoffState,
-                broker = undefined
-            },
-            {next_state, backoff, NewData, {state_timeout, DelayMs, find_coordinator}}
+            ?LOG_WARNING("Failed to connect to broker at ~s: ~p", [format_broker(Broker), Reason]),
+            case kafine_backoff:backoff(BackoffState) of
+                limit_exceeded ->
+                    ?LOG_ERROR(
+                        "Backoff limit exceeded when attempting to connect to coordinator"
+                    ),
+                    {stop, backoff_limit_exceeded, Data};
+                {DelayMs, NewBackoffState} ->
+                    telemetry:execute(
+                        [kafine, coordinator, backoff],
+                        #{delay_ms => DelayMs},
+                        #{ref => Ref, reason => Reason}
+                    ),
+                    NewData = Data#data{backoff_state = NewBackoffState},
+                    % If we failed to connect the coordinator, we should retry find_coordinator.
+                    % This avoids us looping forever if the cluster moves the coordinator after we
+                    % queried it.
+                    {next_state, backoff, NewData, {state_timeout, DelayMs, find_coordinator}}
+            end
     end;
 handle_event(
     state_timeout,
@@ -515,7 +521,7 @@ handle_request(
 
     Data#data{req_ids = NewReqIds};
 handle_request(
-    Request = {join_group, MemberId},
+    Request = {join_group, MemberId, OwnedPartitions0},
     From,
     Data = #data{
         connection = Connection,
@@ -529,13 +535,22 @@ handle_request(
         }
     }
 ) ->
-    % Note that, because of the extra member-id-required round-trip, the assignor is called twice.
-    % If this becomes a problem, we can stash 'Protocols' (or just the metadata) in our state instead.
+    OwnedPartitions = lists:sort([
+        #{topic => Topic, partitions => Partitions}
+     || Topic := Partitions <- OwnedPartitions0
+    ]),
+
     Protocols = lists:map(
         fun(Assignor) ->
+            SubscriptionMetadata = #{
+                topics => Topics,
+                user_data => <<>>,
+                owned_partitions => OwnedPartitions
+            },
+
             #{
                 name => Assignor:name(),
-                metadata => kafcod_consumer_protocol:encode_metadata(Assignor:metadata(Topics))
+                metadata => kafcod_consumer_protocol:encode_metadata(SubscriptionMetadata, 1)
             }
         end,
         Assignors
@@ -688,7 +703,7 @@ handle_response(Response, {offset_fetch, _}, From, Data) ->
 handle_response(Response, {offset_commit, _, _, _}, From, Data) ->
     NewData = handle_offset_commit_response(Response, From, Data),
     {keep_state, NewData};
-handle_response(Response, {join_group, _}, From, Data) ->
+handle_response(Response, {join_group, _, _}, From, Data) ->
     NewData = handle_join_group_response(Response, From, Data),
     {keep_state, NewData};
 handle_response(Response, {sync_group, _, _, _, _}, From, Data) ->
@@ -782,3 +797,6 @@ terminate(_Reason, _State, _Data) ->
 
 request_metadata(ApiKey, ApiVersion, GroupId) ->
     #{api_key => ApiKey, api_version => ApiVersion, group_id => GroupId}.
+
+format_broker(#{host := Host, port := Port}) ->
+    iolist_to_binary(io_lib:format("~s:~B", [Host, Port])).
